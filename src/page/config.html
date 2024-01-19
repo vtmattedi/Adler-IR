@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Adler IR Config</title>
+    <link rel="stylesheet" href="common.css">
+    <link rel="stylesheet" href="medium-slider.css">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Bona+Nova:ital@1&family=Open+Sans:wght@300&family=Glory:wght@100&family=Noto+Sans+JP:wght@100&display=swap"
+        rel="stylesheet">
+    <script type="text/javascript" src="config.js"></script>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+</head>
+
+<body class="outer-div">
+    <div class="card-container">
+        <div class="card">
+            <div style="display: flex; align-items: center;">
+                <a href="/" style="width: 20%;">
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAC3UExURQAAAAEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAv///9w6C2cAAAA7dFJOUwAAETdnlr7a7Pf9RovG6vskdsj2I4TeD27ZtrcFZeMOFaH+qfXp/MtJKHXyySwDqpk2Ms/SLXQr0ORmAdN3OgAAAAFiS0dEPKdqYc8AAAAJcEhZcwAB2HEAAdhxAXOfziYAAAAHdElNRQfnCBUMKiDNPXhyAAABu0lEQVRYw62X13LqQBBE52hJEiIHYRDR2Tc43OAw//9ffsAuKHtBYejXrW5ppQndIt8AQOAq1Vq9EUZR2KjXqhUXACCZ2LKbcavd0T102q24mUcDoNvrD9SDQb/XzVAAGI7GehDj0fCYBJBMzvQozibJIQUAN400A9HM+V8CSOcLzYHFPPUoAMs41FwI4+U3BWC13mhObNarLwrA6lwL4PyLAizXWgjr5b4ApPGmmMAmTncKwDzUggjnu0uAW2hhLNynACRTLYFpslUAJhn1d3F55avJyfYSMMyo/+ub27sfvr4YfgiMjvN//oLf976TEYhAd5zJhwdvd3dBoJeD/+h/SA+EoJ/Nf/rjP+0HCM1Bab4Omghxeb5qjAQtA19bgbi2ga9tJ5WOga+dilQtfNWq1Ex8rUndxNe6NPwVkpOvDfGOor//cvI1FO8o+A/w/JJjqkR2AfMVzB/R/BvNhWQuZXMzmdvZPFDMI80+VM1j3bxYrKvNvFxPsd6NBkMgmZWxOLNkZ5LKmKxXt+fSyti8N/aNos1o2q2u3Wyb7b49cBSJPK9v6aHQZApd9th3guBpj74nCN/F4/87ljGyc45ee/8AAAAldEVYdGRhdGU6Y3JlYXRlADIwMjMtMDgtMjFUMTI6NDI6MTcrMDA6MDAGYx7zAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDIzLTA4LTIxVDEyOjQyOjE3KzAwOjAwdz6mTwAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyMy0wOC0yMVQxMjo0MjozMiswMDowMDA2r0oAAAAZdEVYdFNvZnR3YXJlAHd3dy5pbmtzY2FwZS5vcmeb7jwaAAAAAElFTkSuQmCC"
+                        alt="Back Arrow" height="35px" width="35px"></a>
+                <h2 class="settings-title">Settings</h2>
+            </div>
+        </div>
+        <div class="card">
+            <h5>Select Main Sensor:</h5>
+            <select class="sensorList" id="sensorTopic">
+
+            </select>
+            <div class="slider-outer-div">
+                <label>Default back to board sensor:</label>
+                <label class="switch"><input type="checkbox" id="defaultBack"><span class="slider round"></label>
+                </span>
+            </div>
+        </div>
+        <div class="card">
+            <h5>Shutdown AC:</h5>
+            <div class="slider-outer-div">
+                <label>Shutdown at specific time:</label>
+                <label class="switch"><input type="checkbox" id="AcShutdown"
+                        onchange="setDisabled('timeInput',this.checked)"><span class="slider round"></label>
+                </span>
+            </div>
+            <div>
+                <label>Time: </label>
+                <input type="time" id="timeInput">
+            </div>
+            <div class="slider-outer-div">
+                <label>Use Temperature Threshold:</label>
+                <label class="switch"><input type="checkbox" id="temperatureThreshold"
+                        onchange="setDisabled('temperatureInput',this.checked)"><span class="slider round"></label>
+                </span>
+
+            </div>
+            <div>
+                <label>Temperature: </label>
+                <input type="number" step=0.5 id="temperatureInput" style="width: 60px; text-align: center;">&deg;C
+            </div>
+            <div class="slider-outer-div">
+                <label>Use Double Enforcement:</label>
+                <label class="switch"><input type="checkbox" id="doubleEnforcement"><span class="slider round"></label>
+                </span>
+            </div>
+            <div>
+                <button style="width: 120px; border-radius: 50px; margin: 5px" onclick="saveConfigs()">Save</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h5>AC Status:</h5>
+            <div id="ac-statusDiv">Loading...</div>
+        </div>
+        <div class="card" id="ManualSyncDiv">
+            <h6>Manual Sync: </h6>
+            <div style="margin: 5px;" class="slider-outer-div">
+                <label>Ac Is:</label>
+                <div><label style="margin-right: 5px;">OFF</label><label class="switch"><input type="checkbox" id="ManualACState"><span
+                            class="slider round"></label></span><label style="margin-left: 5px;">ON</label>
+                </div>
+            </div>
+            <div  class="slider-outer-div">
+                <label>Temperature: </label>
+                <input type="number" step=1 id="ManualTempState" min="18" max="30" value="24" style="width: 60px; text-align: center;">
+            </div>
+            <div style="justify-content: space-around; display: flex; margin: 5px;">
+                <button style="width: 120px; border-radius: 50px;" onclick="ManualSync()">Sync</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="margin: 5px;" class="slider-outer-div">
+                <label>Led Feedback: </label>
+                <label class="switch"><input type="checkbox" id="ledFeedback"><span class="slider round"></label></span>
+            </div>
+            <div style="justify-content: space-around; display: flex; margin: 5px;">
+                <button style="width: 120px; border-radius: 50px;" onclick="espRestart()">Restart</button>
+                <button style="width: 120px; border-radius: 50px;" onclick="factoryReset()">Factory Reset</button>
+            </div>
+        </div>
+
+        <footer>
+            <p class="footer"><i>Adler Remote by MattediWorks&copy;</i></p>
+        </footer>
+    </div>
+</body>
+
+</html>

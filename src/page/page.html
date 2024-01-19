@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Adler IR Remote</title>
+    <link rel="stylesheet" href="common.css">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script type="text/javascript" src="page.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Bona+Nova:ital@1&family=Open+Sans:wght@300&family=Glory:wght@100&family=Noto+Sans+JP:wght@100&display=swap"
+        rel="stylesheet">
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+</head>
+
+<body class="outer-div">
+    <div class="card-container">
+        <div class="card">
+            <h2 style="font-family: 'Glory', serif;">Adler Ir Remote</h2>
+        </div>
+        <div class="card">
+            <div class="ir-buttons-container">
+                <button class="ir-buttons" onclick="sendIRCode('MINUS')"> - </button> <button id="power-button"
+                    type="submit" class="ir-buttons" onclick="sendIRCode('POWER')">Power</button><button
+                    class="ir-buttons" onclick="sendIRCode('PLUS')"> + </button>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Room temperature:</h2>
+            <div class="temperatureDiv" id="temperatureDiv">Loading...</div>
+            <div style="font-size: 14px;" id="sensor-topicDiv">Sensor: Loading...</div>
+            <div style="font-size: 14px;" id="ac-statusDiv">Loading...</div>
+        </div>
+        <div class="card">
+            <h6>Control Temperature:</h6>
+            <div class="set-div">
+                <button class="set-button" id="setButton" onclick="setTemperature()">Set</button>
+                <div class="step-buttons-box">
+                    <button class="step-buttons-btn">
+                        <div class="step-buttons-minus" onclick="updatesetTemp(false)">-</div>
+                    </button>
+                    <input id="set-tempInput" type="number" min="18" max="30" value="24" step="1" />
+                    <button class="step-buttons-btn" onclick="updatesetTemp(true)">
+                        <div class="step-buttons-plus">+</div>
+                    </button>
+                </div>
+                <button class="set-button" id="offButton" onclick="setTemperature(0)">Off</button>
+            </div>
+            <div style="font-size: 14px;" id="set-statusDiv">Status: Loading...</div>
+        </div>
+        <div class="card">
+            <h6>Schedule Shutdown:</h6>
+            <div class="set-div">
+                <button class="set-button" id="goButton" onclick="AcShutdown()">Schedule</button>
+                <div class="step-buttons-box">
+                    <button class="step-buttons-btn">
+                        <div class="step-buttons-minus" onclick="updateShutdown(false)">-</div>
+                    </button>
+                    <input id="set-shutdownInput" type="number" min="0" max="12" value="2" step="1" />
+                    <button class="step-buttons-btn" onclick="updateShutdown(true)">
+                        <div class="step-buttons-plus">+</div>
+                    </button>
+                </div> 
+            </div>
+            <div class="slider-outer-div">
+                <label>Use physical shutdown:</label>
+                <label class="switch"><input type="checkbox" id="useHWInput"><span class="slider round"></label>
+                </span>
+            </div>
+        </div>
+        <div class="card">
+            <div style="display: flex; flex-direction: row; justify-content: space-evenly;">
+                <h6>MQTT Status:</h6><button id="mqqt-reconnect-button" style="border-radius: 5px; display: none;"
+                    onclick="sendMqttReconnect()">Reconnect</button>
+            </div>
+            <div id="mqttDiv">Loading...</div>
+        </div>
+        <div class="card">
+            <div style="justify-content: space-around;">
+                <button class="settings-button" onclick="window.location.href = `/config.html`">Settings</button>
+            </div>
+        </div>
+        <div class="card">
+            <div>
+                <h6>Synced:</h6>
+                <div id="synced-timeDiv">Loading...</div>
+            </div>
+            <div>
+                <h6>Life:</h6>
+                <div id="life-timeDiv">Loading...</div>
+            </div>
+            <div>
+                <h6>Boot:</h6>
+                <div id="boot-timeDiv">Loading...</div>
+            </div>
+        </div>
+
+        <footer>
+            <p class="footer"><i>Adler Remote by MattediWorks&copy;</i></p>
+        </footer>
+    </div>
+
+</body>
+
+
+</html>

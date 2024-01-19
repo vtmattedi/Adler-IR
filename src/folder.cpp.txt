@@ -1,0 +1,1706 @@
+
+
+#ifndef ESP32
+#define ES8266 true
+#endif
+
+#include <../lib/Time-master/TimeLib.h>
+#include <../lib/pubsubclient-2.8/src/PubSubClient.h>
+#include <../include/Creds/WifiCred.h>
+#include <../include/Creds/HiveMQCred.h>
+#include <../lib/NightMare TCP/NightMareTCPServer.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <ArduinoOTA.h>
+#include <FS.h>
+#include <LittleFS.h>
+
+#ifdef ES8266
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <ESP8266HTTPClient.h>
+#endif
+
+#ifdef ESP32
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ESPmDNS.h>
+#include <WebServer.h>
+#endif
+
+#define IR_SEND_PIN 3
+#define ONE_WIRE_BUS 0
+#define LED_PIN 2
+#define NO_LED_FEEDBACK_CODE
+#define DEVICE_NAME "Adler"
+#define PRINT_FIRMWARE_VER
+
+const char *indexhtml()
+{
+    return
+        // ##$$page.html
+
+        R"===(<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Adler IR Remote</title>
+    <link rel="stylesheet" href="common.css">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script type="text/javascript" src="page.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Bona+Nova:ital@1&family=Open+Sans:wght@300&family=Glory:wght@100&family=Noto+Sans+JP:wght@100&display=swap"
+        rel="stylesheet">
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+</head>
+
+<body class="outer-div">
+    <div class="card-container">
+        <div class="card">
+            <h2 style="font-family: 'Glory', serif;">Adler Ir Remote</h2>
+        </div>
+        <div class="card">
+            <div class="ir-buttons-container">
+                <button class="ir-buttons" onclick="sendIRCode('MINUS')"> - </button> <button id="power-button"
+                    type="submit" class="ir-buttons" onclick="sendIRCode('POWER')">Power</button><button
+                    class="ir-buttons" onclick="sendIRCode('PLUS')"> + </button>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Room temperature:</h2>
+            <div class="temperatureDiv" id="temperatureDiv">Loading...</div>
+            <div style="font-size: 14px;" id="sensor-topicDiv">Sensor: Loading...</div>
+            <div style="font-size: 14px;" id="ac-statusDiv">Loading...</div>
+        </div>
+        <div class="card">
+            <h6>Control Temperature:</h6>
+            <div class="set-div">
+                <button class="set-button" id="setButton" onclick="setTemperature()">Set</button>
+                <div class="step-buttons-box">
+                    <button class="step-buttons-btn">
+                        <div class="step-buttons-minus" onclick="updatesetTemp(false)">-</div>
+                    </button>
+                    <input id="set-tempInput" type="number" min="18" max="30" value="24" step="1" />
+                    <button class="step-buttons-btn" onclick="updatesetTemp(true)">
+                        <div class="step-buttons-plus">+</div>
+                    </button>
+                </div>
+                <button class="set-button" id="offButton" onclick="setTemperature(0)">Off</button>
+            </div>
+            <div style="font-size: 14px;" id="set-statusDiv">Status: Loading...</div>
+        </div>
+        <div class="card">
+            <h6>Schedule Shutdown:</h6>
+            <div class="set-div">
+                <button class="set-button" id="goButton" onclick="AcShutdown()">Schedule</button>
+                <div class="step-buttons-box">
+                    <button class="step-buttons-btn">
+                        <div class="step-buttons-minus" onclick="updateShutdown(false)">-</div>
+                    </button>
+                    <input id="set-shutdownInput" type="number" min="0" max="12" value="2" step="1" />
+                    <button class="step-buttons-btn" onclick="updateShutdown(true)">
+                        <div class="step-buttons-plus">+</div>
+                    </button>
+                </div> 
+            </div>
+            <div class="slider-outer-div">
+                <label>Use physical shutdown:</label>
+                <label class="switch"><input type="checkbox" id="useHWInput"><span class="slider round"></label>
+                </span>
+            </div>
+        </div>
+        <div class="card">
+            <div style="display: flex; flex-direction: row; justify-content: space-evenly;">
+                <h6>MQTT Status:</h6><button id="mqqt-reconnect-button" style="border-radius: 5px; display: none;"
+                    onclick="sendMqttReconnect()">Reconnect</button>
+            </div>
+            <div id="mqttDiv">Loading...</div>
+        </div>
+        <div class="card">
+            <div style="justify-content: space-around;">
+                <button class="settings-button" onclick="window.location.href = `/config.html`">Settings</button>
+            </div>
+        </div>
+        <div class="card">
+            <div>
+                <h6>Synced:</h6>
+                <div id="synced-timeDiv">Loading...</div>
+            </div>
+            <div>
+                <h6>Life:</h6>
+                <div id="life-timeDiv">Loading...</div>
+            </div>
+            <div>
+                <h6>Boot:</h6>
+                <div id="boot-timeDiv">Loading...</div>
+            </div>
+        </div>
+
+        <footer>
+            <p class="footer"><i>Adler Remote by MattediWorks&copy;</i></p>
+        </footer>
+    </div>
+
+</body>
+
+
+</html>)==="
+        // ##$$
+        ;
+}
+
+const char *indexjs()
+{
+    return
+        // ##$$page.js
+
+        R"===(
+function setName(path) {
+    if (path.indexOf("/") < 0)
+        return path;
+    return `${path.substring(0, path.indexOf("/"))} (${path.substring(path.lastIndexOf("/") + 1)})`;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    fetchInfoUpdates();
+    setDisabled(false);
+    setInterval(fetchInfoUpdates, 1000); // Update the codes every 5 seconds (adjust as needed)
+    // const irInput = document.getElementById("ir-code");
+    // irInput.addEventListener("keydown", function (event) {
+    //     if (event.key === "Enter") {
+    //         sendIRCode();
+    //     }
+    // });
+});
+
+function updateTemperatureDisplay(temperature) {
+    const temperatureDiv = document.getElementById('temperatureDiv');
+    temperatureDiv.textContent = `${temperature} \u00B0C`;//+'&deg; C';
+}
+
+function sendIRCode(value) {
+    // const irInput = document.getElementById("ir-code");
+    // if (typeof (value) !== "undefined") {
+    //     irInput.value = value;
+    // }
+    fetch('/send-ir?code=' + value)
+        .then(response => response.text())
+        .then(data => {
+            console.log(data);
+            // Optionally, update UI with response data
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            // Handle error if needed
+        });
+}
+function getDefineName(value) {
+    switch (value) {
+        case -4:
+            return "MQTT_CONNECTION_TIMEOUT";
+        case -3:
+            return "MQTT_CONNECTION_LOST";
+        case -2:
+            return "MQTT_CONNECT_FAILED";
+        case -1:
+            return "MQTT_DISCONNECTED";
+        case 0:
+            return "MQTT_CONNECTED";
+        case 1:
+            return "MQTT_CONNECT_BAD_PROTOCOL";
+        case 2:
+            return "MQTT_CONNECT_BAD_CLIENT_ID";
+        case 3:
+            return "MQTT_CONNECT_UNAVAILABLE";
+        case 4:
+            return "MQTT_CONNECT_BAD_CREDENTIALS";
+        case 5:
+            return "MQTT_CONNECT_UNAUTHORIZED";
+        default:
+            return "Unknown";
+    }
+}
+
+function sendMqttReconnect() {
+    fetch('/general?mqtt-force-recon=1').then(response => response.text())
+        .then(data => {
+            alert(data);
+        })
+}
+const Skynet = {
+    "Control": "Unknown",
+    "Ac": "Unknown",
+    "Temp": "Unknown",
+    "Ssleep": "Unknown",
+    "Hsleep": "Unknown",
+    "Settemp": "Unknown",
+
+    ParseNewData(data) {
+        var pair = data.split("+");
+        pair.forEach(value => {
+            var KeyPair = value.split("=");
+            if (KeyPair.length > 0)
+                this[KeyPair[0]] = KeyPair[1];
+        });
+
+    },
+
+    SetNewData() {
+
+        var takeover = parseInt(this["Control"]);
+        const setDiv = document.getElementById('set-statusDiv');
+        const acDiv = document.getElementById('ac-statusDiv');
+
+
+
+        //Control not finished
+        if (takeover > 0) {
+            acDiv.textContent = "Skynet is taking control in: " + formatTime(takeover) + ".";
+            setDiv.textContent = "---";
+            setDisabled(false);
+            return;
+        }
+        const setTemp = parseInt(this.Settemp);
+        if (setTemp > 0)
+            setDiv.textContent = `Maintaining at ${setTemp}\xB0C.`;
+        else
+            setDiv.textContent = "Temperature Controller is off.";
+
+        var text = `ac is ${this.Ac} || ${this.Temp}\u00B0C`
+        const SWsleep = parseInt(this.Ssleep);
+        const HWsleep = parseInt(this.Hsleep);
+        if (SWsleep >= 0 || HWsleep >= 0) {
+            if (HWsleep > SWsleep)
+                text += ` (${this.Ac === "on" ? "sleeping" : "waking"} in ${formatTime(Date.now() - HWsleep * 1000)})`;
+            else
+                text += ` (sleeping in ${formatTime(Date.now() - SWsleep * 1000)})`;
+
+        }
+        acDiv.textContent = text;
+        setDisabled(true);
+    }
+
+}
+
+
+function fetchInfoUpdates() {
+    fetch('/info').then(response => response.text())
+        .then(data => {
+            parseInfoData(data);
+        })
+}
+function parseInfoData(responseText) {
+    const infoPairs = responseText.split(';');
+    infoPairs.forEach(pair => {
+        const [name, value] = pair.split(':');
+        updateInfoData(name, value);
+    });
+}
+function updateInfoData(name, value) {
+    if (typeof (name) === undefined)
+        return;
+    if (name === "temp") {
+        const temperatureDiv = document.getElementById('temperatureDiv');
+        temperatureDiv.textContent = `${value} \u00B0C`;
+    }
+    else if (name === "mqtt") {
+        var intvalue = parseInt(value);
+        const mqttDiv = document.getElementById('mqttDiv');
+        mqttDiv.textContent = getDefineName(intvalue);
+        if (intvalue === 0) {
+            document.getElementById("mqqt-reconnect-button").style.display = "none";
+            mqttDiv.classList.add("mqtt-good");
+            mqttDiv.classList.remove("mqtt-bad");
+        }
+        else {
+            document.getElementById("mqqt-reconnect-button").style.display = "block";
+            mqttDiv.classList.remove("mqtt-good");
+            mqttDiv.classList.add("mqtt-bad");
+        }
+    }
+    else if (name === "time_synced") {
+        var intvalue = parseInt(value);
+        const thisDiv = document.getElementById('synced-timeDiv');
+        thisDiv.textContent = intvalue === 0 ? "Nope" : "Yup";
+        if (intvalue === 1) {
+            thisDiv.classList.add("mqtt-good");
+            thisDiv.classList.remove("mqtt-bad");
+        }
+        else {
+            thisDiv.classList.remove("mqtt-good");
+            thisDiv.classList.add("mqtt-bad");
+        }
+    }
+    else if (name === "life") {
+        var intvalue = parseInt(value);
+        const thisDiv = document.getElementById('life-timeDiv');
+        thisDiv.textContent = formatTime(intvalue);
+
+    }
+    else if (name === "boot_time") {
+        var date = new Date((parseInt(value) + 3 * 3600) * 1000);
+        const thisDiv = document.getElementById('boot-timeDiv');
+        const options = { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+        thisDiv.textContent = date.toLocaleString('pt-US', options);
+
+    }
+    else if (name === "mainSensor") {
+        const thisDiv = document.getElementById('sensor-topicDiv');
+        thisDiv.textContent = "Sensor: " + setName(value);
+    }
+
+    else if (name === "Skynet") {
+        Skynet.ParseNewData(value);
+        Skynet.SetNewData();
+    }
+
+}
+function formatTime(seconds) {
+    if (seconds < 90) {
+        return `${seconds} s`;
+    } else if (seconds < 90 * 60) {
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes} m`;
+    } else if (seconds < 26 * 60 * 60) {
+        const hours = Math.floor(seconds / 3600);
+        const remainingMinutes = Math.floor((seconds % 3600) / 60);
+
+        if (remainingMinutes === 0) {
+            return `${hours} h`;
+        } else {
+            const formattedMinutes = remainingMinutes < 10 ? `0${remainingMinutes}` : remainingMinutes;
+            return `${hours} h ${formattedMinutes} m`;
+        }
+    }
+    else {
+        const days = Math.floor(seconds / (3600 * 24));
+        const remainingHours = Math.floor((seconds % (3600 * 24)) / 60);
+
+        if (remainingHours === 0) {
+            return `${days} d`;
+        } else {
+            const formattedHours = remainingHours < 10 ? `0${remainingHours}` : remainingHours;
+            return `${days} d ${formattedHours} h`;
+        }
+    }
+}
+
+function updateTemperatureDislay(temperature) {
+    const temperatureDiv = document.getElementById('temperatureDiv');
+    temperatureDiv.textContent = `${temperature} \u00B0C`;//+'&deg; C';
+}
+
+function setTemperature(temperature) {
+    var _temp = 0;
+    if (typeof (temperature) !== "undefined")
+        _temp = temperature;
+    else
+        _temp = document.getElementById("set-tempInput").value;
+    fetch("/general?set-temperature=" + _temp)
+        .then(response => response.text())
+        .then(data => {
+            console.log(data);
+            // Optionally, update UI with response data
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            // Handle error if needed
+        });
+}
+
+function updatesetTemp(increase) {
+    if (document.getElementById('set-tempInput').hasAttributes("disabled"))
+        return;
+    if (increase === true && document.getElementById('set-tempInput').value < 30) {
+        document.getElementById('set-tempInput').value++;
+    }
+    else if (increase === false && document.getElementById('set-tempInput').value > 18) {
+        document.getElementById('set-tempInput').value--;
+    }
+}
+
+
+function updateShutdown(increase) {
+    if (document.getElementById('set-shutdownInput').hasAttributes("disabled"))
+        return;
+    if (increase === true && document.getElementById('set-shutdownInput').value < 12) {
+        document.getElementById('set-shutdownInput').value++;
+    }
+    else if (increase === false && document.getElementById('set-shutdownInput').value > 1) {
+        document.getElementById('set-shutdownInput').value--;
+    }
+}
+
+function AcShutdown() {
+    var request = String(document.getElementById('set-shutdownInput').value);
+    if (!document.getElementById("useHWInput").checked)
+        request += "&software=1";
+    fetch(`/general?acshutdown=${request}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            console.log(data)
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /general?acshutdown=`);
+        });
+}
+
+function setDisabled(value) {
+    if (!value) {
+        document.getElementById("setButton").setAttribute("disabled", "");
+        document.getElementById("offButton").setAttribute("disabled", "");
+        document.getElementById("goButton").setAttribute("disabled", "");
+        document.getElementById("set-tempInput").setAttribute("disabled", "");
+        document.getElementById("set-shutdownInput").setAttribute("disabled", "");
+        document.getElementById("useHWInput").setAttribute("disabled", "");
+
+    }
+    else {
+        document.getElementById("setButton").removeAttribute("disabled");
+        document.getElementById("offButton").removeAttribute("disabled");
+        document.getElementById("goButton").removeAttribute("disabled");
+        document.getElementById("set-tempInput").removeAttribute("disabled");
+        document.getElementById("set-shutdownInput").removeAttribute("disabled");
+        document.getElementById("useHWInput").removeAttribute("disabled");
+    }
+}
+
+)==="
+        // ##$$
+        ;
+}
+
+const char *indexcss()
+{
+    return
+        // ##$$common.css
+
+        R"===(@charset "utf-8";
+
+.settings-title{
+    font-family: 'Open Sans', sans-serif;
+    width: 60%;
+    text-align: center;
+    margin-right: 20%;
+}
+.sensorList
+{
+   margin: 5px;
+   text-align: center;
+}
+.outer-div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  /* //  height: 100vh; */
+    width: 50vw;
+    margin-left: 25vw;
+    margin-top: 1vh;
+}
+
+.card h2 {
+    margin: 5px;
+}
+
+.ir-input {
+    border-radius: 30px;
+    margin: 5px;
+    text-align: center;
+}
+
+/* Style the outer div */
+.card-container {
+    text-align: center;
+    border: 1px solid #ccc;
+    padding: 20px;
+   
+    /* zoom: %; */
+    border-radius: 10px;
+}
+
+/* Style the temperatureDiv */
+.temperatureDiv {
+    font-size: 24px;
+    padding: 10px;
+    margin: 5px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.mqtt-good {
+    color: darkgreen;
+}
+
+.mqtt-bad {
+    color: darkred;
+}
+
+.card {
+    margin: 5px;
+}
+
+.ir-buttons-container {
+    justify-content: space-around;
+}
+
+.ir-buttons {
+    border-radius: 5px;
+    height: 40px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    min-width: 40px;
+    margin: 20px;
+}
+
+button
+{
+    font-family:Verdana, Geneva, Tahoma, sans-serif;
+}
+
+.defaultBackDiv
+{
+    margin: 5px;
+    display: flex; 
+    align-content: center;
+
+}
+.defaultBackDiv label{
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+}
+.slider-outer-div
+{
+    display: flex;
+    justify-content: space-between;
+    margin: 5px;
+}
+
+.back-arrow {
+    width: 0;
+    height: 0;
+    border-left: 20px solid transparent;
+    border-right: 20px solid transparent;
+    border-bottom: 20px solid #333; /* Change this color to your desired arrow color */
+    transform: rotate(270deg);
+    position: relative;
+    top: 50%;
+    left: 50%;
+    margin-top: -10px; /* Half of the border height */
+    margin-left: -10px; /* Half of the border width */
+  }
+  
+#body {
+    flex-direction: row;
+}
+
+.settings-button {
+    border-radius: 25px;
+    font-family: 'Open Sans', sans-serif;
+    width: 100px;
+}
+
+.set-div {
+    font-family: Verdana, Geneva, Tahoma, sans-serif;
+    justify-content: space-evenly;
+    flex-direction: row;
+    display: flex;
+    margin: 5px;
+
+}
+
+.set-div input {
+    margin: 5px;
+    text-align: center;
+}
+
+.set-button {
+    margin: 5px;
+    font-size: ;
+    height: 30px;
+    width: 50px;
+    min-width: fit-content;
+    border-radius: 10px;
+}
+
+input[type = "time"]
+{
+    font-size: ;
+}
+
+.outer-div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 1vh;
+}
+
+.card h2 {
+    margin: 5px;
+}
+
+.ir-input {
+    border-radius: 30px;
+    margin: 5px;
+    text-align: center;
+}
+
+/* Style the outer div */
+.card-container {
+    text-align: center;
+    border: 1px solid #ccc;
+    padding: 20px;
+    border-radius: 10px;
+}
+
+/* Style the temperatureDiv */
+.temperatureDiv {
+    font-size: 24px;
+    padding: 10px;
+    margin: 5px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.mqtt-good {
+    color: darkgreen;
+}
+
+.mqtt-bad {
+    color: darkred;
+}
+
+.card {
+    margin: 5px;
+}
+
+.Idle {
+    color: darkgreen;
+}
+
+.Cooling {
+    color: aqua;
+}
+
+.Warming {
+    color: darkred;
+}
+
+.ir-buttons-container {
+    justify-content: space-around;
+}
+
+.ir-buttons {
+    border-radius: 5px;
+    height: 40px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    min-width: 40px;
+    margin: 20px;
+}
+
+footer {
+    text-align: center;
+    width: 100%;
+    justify-content: center;
+    align-items: center;
+    float: none;
+}
+
+body {
+    background-color: #1DE9B6;
+}
+
+.stepper-input {
+    display: flex;
+    font-size: 1.5em;
+    justify-content: center;
+    padding: 50px;
+}
+
+.btn {
+    cursor: pointer;
+    padding: 1em;
+    color: #fff;
+    background-color: #121212;
+    border: 1px solid #121212;
+}
+
+.btn:hover {
+    background-color: #fff;
+    color: #121212;
+}
+
+.btn-left {
+    border-radius: 10px 0 0 10px;
+}
+
+.btn-right {
+    border-radius: 0 10px 10px 0;
+}
+
+.input-box {
+    border: 1px solid #121212;
+    text-align: center;
+}
+
+.step-buttons-box {
+    justify-content: center;
+    margin: 0px;
+    display: flex;
+    align-items: center;
+}
+
+.step-buttons-btn {
+    justify-content: center;
+    display: flex;
+    align-items: center;
+    text-align: center;
+    height: 25px;
+    width: 25px;
+    background: transparent;
+    border-color: transparent;
+    border: transparent 0px;
+    border-radius: 10px;
+    transition: background-color 2s ease-out 100ms
+}
+
+.step-buttons-btn:hover {
+    animation: linear 1s;
+    color: white;
+    background: #6c6c6c;
+    border-color: white;
+    border-radius: 10px;
+}
+
+.step-buttons-minus:hover {
+    color: aqua;
+}
+
+.step-buttons-plus:hover {
+    color: darkred;
+})==="
+        // ##$$
+        ;
+}
+
+#pragma region OTA
+void startOTA()
+{
+    String type;
+    // is_updating = true;
+    //  caso a atualização esteja sendo gravada na memória flash externa, então informa "flash"
+    if (ArduinoOTA.getCommand() == 0)
+        type = "flash";
+    else                     // caso a atualização seja feita pela memória interna (file system), então informa "filesystem"
+        type = "filesystem"; // U_SPIFFS
+    // exibe mensagem junto ao tipo de gravação
+    Serial.println("Start updating " + type);
+}
+// exibe mensagem
+void endOTA()
+{
+    Serial.println("\nEnd");
+
+}
+// exibe progresso em porcentagem
+void progressOTA(unsigned int progress, unsigned int total)
+{
+    byte update_progress = round((float)progress / total * 100);
+    Serial.printf("Progress: %u%%\r\n", (progress / (total / 100)));
+}
+
+void errorOTA(ota_error_t error)
+{
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)
+        Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)
+        Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR)
+        Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR)
+        Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)
+        Serial.println("End Failed");
+
+}
+#pragma endregion
+
+
+void printDir(String dirName, int spaces = 0)
+{
+
+    fs::File dir = LittleFS.open(dirName);
+    fs::File file = dir.openNextFile();
+    Serial.printf("----- Folder: %s ----- \n", dirName.c_str());
+
+    while (file)
+    {
+        for (size_t i = 0; i < spaces; i++)
+        {
+            Serial.print("*");
+        }
+        Serial.printf(" %s [%d]\n", file.name(), (float)file.size() / 1024);
+
+        if (file.isDirectory())
+        {
+            int b = spaces + 1;
+            printDir(String(dir.name() + String("/") + file.name()), b);
+        }
+
+        file = dir.openNextFile();
+    }
+}
+
+const char *configHTML()
+{
+    return
+        // ##$$config.html
+
+        R"===(<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Adler IR Config</title>
+    <link rel="stylesheet" href="common.css">
+    <link rel="stylesheet" href="medium-slider.css">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Bona+Nova:ital@1&family=Open+Sans:wght@300&family=Glory:wght@100&family=Noto+Sans+JP:wght@100&display=swap"
+        rel="stylesheet">
+    <script type="text/javascript" src="config.js"></script>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+</head>
+
+<body class="outer-div">
+    <div class="card-container">
+        <div class="card">
+            <div style="display: flex; align-items: center;">
+                <a href="/" style="width: 20%;">
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAC3UExURQAAAAEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAgEAAv///9w6C2cAAAA7dFJOUwAAETdnlr7a7Pf9RovG6vskdsj2I4TeD27ZtrcFZeMOFaH+qfXp/MtJKHXyySwDqpk2Ms/SLXQr0ORmAdN3OgAAAAFiS0dEPKdqYc8AAAAJcEhZcwAB2HEAAdhxAXOfziYAAAAHdElNRQfnCBUMKiDNPXhyAAABu0lEQVRYw62X13LqQBBE52hJEiIHYRDR2Tc43OAw//9ffsAuKHtBYejXrW5ppQndIt8AQOAq1Vq9EUZR2KjXqhUXACCZ2LKbcavd0T102q24mUcDoNvrD9SDQb/XzVAAGI7GehDj0fCYBJBMzvQozibJIQUAN400A9HM+V8CSOcLzYHFPPUoAMs41FwI4+U3BWC13mhObNarLwrA6lwL4PyLAizXWgjr5b4ApPGmmMAmTncKwDzUggjnu0uAW2hhLNynACRTLYFpslUAJhn1d3F55avJyfYSMMyo/+ub27sfvr4YfgiMjvN//oLf976TEYhAd5zJhwdvd3dBoJeD/+h/SA+EoJ/Nf/rjP+0HCM1Bab4Omghxeb5qjAQtA19bgbi2ga9tJ5WOga+dilQtfNWq1Ex8rUndxNe6NPwVkpOvDfGOor//cvI1FO8o+A/w/JJjqkR2AfMVzB/R/BvNhWQuZXMzmdvZPFDMI80+VM1j3bxYrKvNvFxPsd6NBkMgmZWxOLNkZ5LKmKxXt+fSyti8N/aNos1o2q2u3Wyb7b49cBSJPK9v6aHQZApd9th3guBpj74nCN/F4/87ljGyc45ee/8AAAAldEVYdGRhdGU6Y3JlYXRlADIwMjMtMDgtMjFUMTI6NDI6MTcrMDA6MDAGYx7zAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDIzLTA4LTIxVDEyOjQyOjE3KzAwOjAwdz6mTwAAACh0RVh0ZGF0ZTp0aW1lc3RhbXAAMjAyMy0wOC0yMVQxMjo0MjozMiswMDowMDA2r0oAAAAZdEVYdFNvZnR3YXJlAHd3dy5pbmtzY2FwZS5vcmeb7jwaAAAAAElFTkSuQmCC"
+                        alt="Back Arrow" height="35px" width="35px"></a>
+                <h2 class="settings-title">Settings</h2>
+            </div>
+        </div>
+        <div class="card">
+            <h5>Select Main Sensor:</h5>
+            <select class="sensorList" id="sensorTopic">
+
+            </select>
+            <div class="slider-outer-div">
+                <label>Default back to board sensor:</label>
+                <label class="switch"><input type="checkbox" id="defaultBack"><span class="slider round"></label>
+                </span>
+            </div>
+        </div>
+        <div class="card">
+            <h5>Shutdown AC:</h5>
+            <div class="slider-outer-div">
+                <label>Shutdown at specific time:</label>
+                <label class="switch"><input type="checkbox" id="AcShutdown"
+                        onchange="setDisabled('timeInput',this.checked)"><span class="slider round"></label>
+                </span>
+            </div>
+            <div>
+                <label>Time: </label>
+                <input type="time" id="timeInput">
+            </div>
+            <div class="slider-outer-div">
+                <label>Use Temperature Threshold:</label>
+                <label class="switch"><input type="checkbox" id="temperatureThreshold"
+                        onchange="setDisabled('temperatureInput',this.checked)"><span class="slider round"></label>
+                </span>
+
+            </div>
+            <div>
+                <label>Temperature: </label>
+                <input type="number" step=0.5 id="temperatureInput" style="width: 60px; text-align: center;">&deg;C
+            </div>
+            <div class="slider-outer-div">
+                <label>Use Double Enforcement:</label>
+                <label class="switch"><input type="checkbox" id="doubleEnforcement"><span class="slider round"></label>
+                </span>
+            </div>
+            <div>
+                <button style="width: 120px; border-radius: 50px; margin: 5px" onclick="saveConfigs()">Save</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h5>AC Status:</h5>
+            <div id="ac-statusDiv">Loading...</div>
+        </div>
+        <div class="card" id="ManualSyncDiv">
+            <h6>Manual Sync: </h6>
+            <div style="margin: 5px;" class="slider-outer-div">
+                <label>Ac Is:</label>
+                <div><label style="margin-right: 5px;">OFF</label><label class="switch"><input type="checkbox" id="ManualACState"><span
+                            class="slider round"></label></span><label style="margin-left: 5px;">ON</label>
+                </div>
+            </div>
+            <div  class="slider-outer-div">
+                <label>Temperature: </label>
+                <input type="number" step=1 id="ManualTempState" min="18" max="30" value="24" style="width: 60px; text-align: center;">
+            </div>
+            <div style="justify-content: space-around; display: flex; margin: 5px;">
+                <button style="width: 120px; border-radius: 50px;" onclick="ManualSync()">Sync</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="margin: 5px;" class="slider-outer-div">
+                <label>Led Feedback: </label>
+                <label class="switch"><input type="checkbox" id="ledFeedback"><span class="slider round"></label></span>
+            </div>
+            <div style="justify-content: space-around; display: flex; margin: 5px;">
+                <button style="width: 120px; border-radius: 50px;" onclick="espRestart()">Restart</button>
+                <button style="width: 120px; border-radius: 50px;" onclick="factoryReset()">Factory Reset</button>
+            </div>
+        </div>
+
+        <footer>
+            <p class="footer"><i>Adler Remote by MattediWorks&copy;</i></p>
+        </footer>
+    </div>
+</body>
+
+</html>)==="
+        // ##$$
+        ;
+}
+const char *configJS()
+{
+    return
+        // ##$$config.js
+
+        R"===(document.addEventListener('DOMContentLoaded', function () {
+    fetchConfigs();
+    fetchConfigUpdates();
+    setInterval(fetchConfigUpdates, 1000);
+});
+
+function fetchConfigUpdates() {
+    fetch('/info?config=true;').then(response => response.text())
+        .then(data => {
+            parseInfoData(data);
+        })
+}
+function parseInfoData(responseText) {
+    const infoPairs = responseText.split(';');
+    infoPairs.forEach(pair => {
+        const [name, value] = pair.split(':');
+        updateInfoData(name, value);
+    });
+}
+function updateInfoData(name, value) {
+    if (typeof (name) === undefined)
+        return;
+    else if (name === "ac") {
+        const thisDiv = document.getElementById('ac-statusDiv');
+
+        if (value.indexOf('=') < 1)
+            thisDiv.textContent = "Status:" + value;
+        else {
+            var variables = value.split('+');
+            var power = true;
+            var temp = 0;
+            var changing = 0;
+            for (let index = 0; index < variables.length; index++) {
+                if (index === 0)
+                    temp = parseInt(variables[index].split('=')[1]);
+                else if (index === 1)
+                    power = variables[index].split('=')[1] === "1";
+                else if (index === 2)
+                    changing = parseInt(variables[index].split('=')[1]);
+            }
+            var text = `ac is ${power ? "on" : "off"} || ${temp}\u00B0C`
+            if (changing > 0)
+                text += ` (${power ? "sleeping" : "waking"} in ${formatTime(Date.now() - changing * 1000)})`;
+            thisDiv.textContent = text;
+        }
+    }
+}
+function formatTime(seconds) {
+    if (seconds < 90) {
+        return `${seconds} s`;
+    } else if (seconds < 90 * 60) {
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes} m`;
+    } else {
+        const hours = Math.floor(seconds / 3600);
+        const remainingMinutes = Math.floor((seconds % 3600) / 60);
+
+        if (remainingMinutes === 0) {
+            return `${hours} h`;
+        } else {
+            const formattedMinutes = remainingMinutes < 10 ? `0${remainingMinutes}` : remainingMinutes;
+            return `${hours} h ${formattedMinutes} m`;
+        }
+    }
+}
+
+function test() {
+    parseSensors(b);
+    setConfigs(d);
+}
+
+function fetchConfigs() {
+    fetch('/settings?sensorsList=1')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            parseSensors(data);
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /settings?sensorsList=1`);
+        });
+
+    fetch('/settings?current-config=1')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            setConfigs(data);
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /settings?current-config=1`);
+        });
+}
+
+
+function getConfig(data) {
+    var config = [];
+    var pos = 0;
+    while (pos < data.length) {
+        var colonIndex = data.indexOf(':', pos);
+        if (colonIndex == -1)
+            break;
+
+        var semicolonIndex = data.indexOf(';', colonIndex);
+        if (semicolonIndex == -1)
+            semicolonIndex = data.length();
+        var thisSensor = {
+            'key': data.substring(pos, colonIndex),
+            'value': data.substring(colonIndex + 1, semicolonIndex)
+        };
+        config.push(thisSensor);
+        pos = semicolonIndex + 1;
+    }
+    return config;
+}
+
+function setConfigs(data) {
+    getConfig(data).forEach(pair => {
+        if (pair.key === "MainSensor") {
+            var found = false;
+            var selectElement = document.getElementById("sensorTopic");
+            for (var i = 0; i < selectElement.options.length; i++) {
+                if (selectElement.options[i].value === pair.value) {
+                    selectElement.options[i].selected = true;
+                    found = true;
+                    i = selectElement.options.length;
+                }
+            }
+            if (!found) {
+                const topicDiv = document.getElementById("sensorTopic");
+                var opt = document.createElement('option');
+                opt.value = pair.value;
+                opt.innerHTML = setName(pair.value);
+                opt.selected = true;
+                topicDiv.appendChild(opt);
+            }
+        }
+        else if (pair.key === "ShutdownTime") {
+            document.getElementById("timeInput").value = pair.value;
+        }
+        else if (pair.key === "TemperatureThreshold") {
+            document.getElementById("temperatureInput").value = pair.value;
+        }
+        else if (pair.key === "AcShutdown") {
+            var value = parseInt(pair.value) == 1;
+            document.getElementById("AcShutdown").checked = value;
+            if (!value)
+                setDisabled("timeInput", false);
+        }
+        else if (pair.key === "UseTemperatureThrashold") {
+            var value = parseInt(pair.value) == 1;
+            document.getElementById("temperatureThreshold").checked = value;
+            if (!value)
+                setDisabled("temperatureInput", false);
+        }
+        else if (pair.key === "DefaultBacktoBoard") {
+            var value = parseInt(pair.value) == 1;
+            document.getElementById("defaultBack").checked = value;
+        }
+        else if (pair.key === "DoubleEnforcement") {
+            var value = parseInt(pair.value) == 1;
+            document.getElementById("doubleEnforcement").checked = value;
+        }
+        else if (pair.key === "LedFeedback") {
+            var value = parseInt(pair.value) == 1;
+            document.getElementById("ledFeedback").checked = value;
+        }
+
+    });
+}
+function formatTime(seconds) {
+    if (seconds < 90) {
+        return `${seconds} s`;
+    } else if (seconds < 90 * 60) {
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes} m`;
+    } else {
+        const hours = Math.floor(seconds / 3600);
+        const remainingMinutes = Math.floor((seconds % 3600) / 60);
+
+        if (remainingMinutes === 0) {
+            return `${hours} h`;
+        } else {
+            const formattedMinutes = remainingMinutes < 10 ? `0${remainingMinutes}` : remainingMinutes;
+            return `${hours} h ${formattedMinutes} m`;
+        }
+    }
+}
+
+// function fetchInfoUpdates() {
+//     fetch('/info').then(response => response.text())
+//         .then(data => {
+//             parseInfoData(data);
+//         })
+// }
+// function parseInfoData(responseText) {
+//     const infoPairs = responseText.split(';');
+//     infoPairs.forEach(pair => {
+//         const [name, value] = pair.split(':');
+//         updateInfoData(name, value);
+//     });
+// }
+// function updateInfoData(name, value) {
+//     if (typeof (name) === "undefined")
+//         return;
+//     if (name === "status") {
+//         const thisDiv = document.getElementById('current-statusDiv');
+//         thisDiv.textContent = value;
+//         thisDiv.className = value;
+
+//     }
+//     else if (name === "ac") {
+//         const thisDiv = document.getElementById('ac-statusDiv');
+//         const powerbutton = document.getElementById('power-button');
+//         if (value === "0") {
+//             thisDiv.textContent = "Unknown";
+//             thisDiv.className = "";
+//             powerbutton.textContent = "Power";
+//         }
+//         else if (value === "1") {
+//             thisDiv.textContent = "ON";
+//             thisDiv.className = "Cooling";
+//             powerbutton.textContent = "Turn Off";
+//         }
+//         else if (value === "2") {
+//             thisDiv.textContent = "OFF";
+//             powerbutton.textContent = "Turn On";
+//             thisDiv.className = "Warming";
+//         }
+//     }
+// }
+// function formatTime(seconds) {
+//     if (seconds < 90) {
+//         return `${seconds} s`;
+//     } else if (seconds < 90 * 60) {
+//         const minutes = Math.floor(seconds / 60);
+//         return `${minutes} m`;
+//     } else {
+//         const hours = Math.floor(seconds / 3600);
+//         const remainingMinutes = Math.floor((seconds % 3600) / 60);
+
+//         if (remainingMinutes === 0) {
+//             return `${hours} h`;
+//         } else {
+//             const formattedMinutes = remainingMinutes < 10 ? `0${remainingMinutes}` : remainingMinutes;
+//             return `${hours} h ${formattedMinutes} m`;
+//         }
+//     }
+// }
+
+function setName(path) {
+    if (path.indexOf("/") < 0)
+        return path;
+    return `${path.substring(0, path.indexOf("/"))} (${path.substring(path.lastIndexOf("/") + 1)})`;
+}
+
+
+function setSensors(sensorlist) {
+
+    const topicDiv = document.getElementById("sensorTopic");
+    topicDiv.innerHTML = "";
+    sensorlist.forEach(sensor => {
+        if (sensor.path != "") {
+            var opt = document.createElement('option');
+            opt.value = sensor.path;
+            opt.innerHTML = sensor.name;
+            topicDiv.appendChild(opt);
+        }
+    });
+
+
+}
+
+function parseSensors(sensorlist) {
+    const sensors = sensorlist.split('+');
+    var options = [];
+    sensors.forEach(sensor => {
+        var thisSensor = {
+            'name': setName(sensor),
+            'path': sensor
+        };
+        options.push(thisSensor);
+        // console.log(thisSensor)
+    });
+    setSensors(options);
+}
+
+function updateTemperatureDisplay(temperature) {
+    const temperatureDiv = document.getElementById('temperatureDiv');
+    temperatureDiv.textContent = `${temperature} \u00B0C`;
+
+}
+
+function setDisabled(id, value) {
+    if (typeof (id) === "undefined" || typeof (value) === "undefined")
+        return;
+    //console.log(id, value);
+    if (!value)
+        document.getElementById(id).setAttribute("disabled", "");
+    else
+        document.getElementById(id).removeAttribute("disabled");
+
+}
+
+function factoryReset() {
+    fetch('/settings?factory-reset=1')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+
+        })
+        .then(data => {
+            alert(data);
+            fetchConfigs();
+
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /settings?current-config=1`);
+        });
+}
+function espRestart() {
+    fetch('/settings?restart=1')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+
+        })
+        .then(data => {
+            alert(data);
+            window.location.href = '/';
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /settings?current-config=1`);
+        });
+}
+
+function saveConfigs() {
+    var result = "";
+    result += "MainSensor=" + document.getElementById("sensorTopic").value + "&";
+    result += "LedFeedback=" + (document.getElementById("ledFeedback").checked ? "1" : "0") + "&";
+    result += "TemperatureThreshold=" + document.getElementById("temperatureInput").value + "&";
+    result += "ShutdownTime=" + document.getElementById("timeInput").value + "&";
+    // fetch('/settings?new-config=1&' + result)
+    // .then(response => {
+    //     if (!response.ok) {
+    //         throw new Error('Network response was not ok');
+    //     }
+    //     return response.text();
+    // })
+    // .then(data => {
+    //     alert(data);
+    // })
+    // .catch(error => {
+    //     console.error(`Fetch error: ${error} on /settings?new-config`);
+    // });
+    // result = "";
+    result += "AcShutdown=" + (document.getElementById("AcShutdown").checked ? "1" : "0") + "&";
+    result += "UseTemperatureThrashold=" + (document.getElementById("temperatureThreshold").checked ? "1" : "0") + "&";
+    result += "DefaultBacktoBoard=" + (document.getElementById("defaultBack").checked ? "1" : "0") + "&";
+    result += "DoubleEnforcement=" + (document.getElementById("doubleEnforcement").checked ? "1" : "0");
+
+    fetch('/settings?new-config=1&' + result)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            alert(data);
+            window.location.href = "/";
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /settings?new-config`);
+        });
+}
+
+function ManualSync() {
+    var result = document.getElementById("ManualTempState").value;
+    if (!document.getElementById("ManualACState").checked)
+        result = "-" + result;
+    fetch('/general?manual-sync=' + result)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(data => {
+            alert(data);
+            window.location.href = "/";
+        })
+        .catch(error => {
+            console.error(`Fetch error: ${error} on /general?manual-sync`);
+        });
+}
+
+)==="
+        // ##$$
+        ;
+}
+const char *configCSS()
+{
+    return
+        // ##$$config.css
+
+        R"===(@charset "utf-8";
+.
+.settings-title{
+    font-family: 'Open Sans', sans-serif;
+    width: 60%;
+    text-align: center;
+    margin-right: 20%;
+}
+.sensorList
+{
+   margin: 5px;
+   text-align: center;
+}
+.outer-div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  /* //  height: 100vh; */
+    width: 50vw;
+    margin-left: 25vw;
+    margin-top: 1vh;
+}
+
+.card h2 {
+    margin: 5px;
+}
+
+.ir-input {
+    border-radius: 30px;
+    margin: 5px;
+    text-align: center;
+}
+
+/* Style the outer div */
+.card-container {
+    text-align: center;
+    border: 1px solid #ccc;
+    padding: 20px;
+   
+    /* zoom: %; */
+    border-radius: 10px;
+}
+
+/* Style the temperatureDiv */
+.temperatureDiv {
+    font-size: 24px;
+    padding: 10px;
+    margin: 5px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.mqtt-good {
+    color: darkgreen;
+}
+
+.mqtt-bad {
+    color: darkred;
+}
+
+.card {
+    margin: 5px;
+}
+
+.Idle {
+    color: darkgreen;
+}
+
+.Cooling {
+    color: aqua;
+}
+
+.Warming {
+    color: darkred;
+}
+
+.ir-buttons-container {
+    justify-content: space-around;
+}
+
+.ir-buttons {
+    border-radius: 5px;
+    height: 40px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    min-width: 40px;
+    margin: 20px;
+}
+
+button
+{
+    font-family:Verdana, Geneva, Tahoma, sans-serif;
+}
+
+.defaultBackDiv
+{
+    margin: 5px;
+    display: flex; 
+    align-content: center;
+
+}
+.defaultBackDiv label{
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+}
+.slider-outer-div
+{
+    display: flex;
+    justify-content: space-between;
+    margin: 5px;
+}
+
+.back-arrow {
+    width: 0;
+    height: 0;
+    border-left: 20px solid transparent;
+    border-right: 20px solid transparent;
+    border-bottom: 20px solid #333; /* Change this color to your desired arrow color */
+    transform: rotate(270deg);
+    position: relative;
+    top: 50%;
+    left: 50%;
+    margin-top: -10px; /* Half of the border height */
+    margin-left: -10px; /* Half of the border width */
+  }
+  )==="
+        // ##$$
+        ;
+}
+const char *slidersCSS()
+{
+    return
+        // ##$$medium-slider.css
+
+        R"===(@charset "utf-8";
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 23px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    -webkit-transition: .4s;
+    transition: .4s;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 17px;
+    width: 17px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    -webkit-transition: .4s;
+    transition: .4s;
+}
+
+input:checked+.slider {
+    background-color: #2196F3;
+}
+
+input:focus+.slider {
+    box-shadow: 0 0 1px #2196F3;
+}
+
+input:checked+.slider:before {
+    -webkit-transform: translateX(17px);
+    -ms-transform: translateX(17px);
+    transform: translateX(17px);
+
+}
+
+/* Rounded sliders */
+.slider.round {
+    border-radius: 23px;
+}
+
+.slider.round:before {
+    border-radius: 50%;
+})==="
+        // ##$$
+        ;
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    WiFi.mode(WIFI_STA); // Important to be explicitly connected as client
+    WiFi.begin(WIFISSID, WIFIPASSWD);
+
+    uint8_t counter = 0;
+    bool color = true;
+    bool notconnected = false;
+    while (WiFi.status() != WL_CONNECTED && !notconnected)
+    {
+
+        if (millis() % 100 == 0)
+        {
+            counter++;
+            Serial.print(".");
+        }
+
+        if (counter == 10)
+        {
+            color = !color;
+            Serial.print(WiFi.status());
+            Serial.println();
+            counter = 0;
+        }
+
+        yield();
+        if (millis() > 15000)
+        {
+            notconnected = true;
+            ESP.restart();
+        }
+    }
+    Serial.println();
+    Serial.print("Connection took (ms) : ");
+    Serial.println(millis());
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+    ArduinoOTA.begin();
+    ArduinoOTA.setPort(3232);
+    ArduinoOTA.onStart(startOTA);
+    ArduinoOTA.onEnd(endOTA);
+    ArduinoOTA.onProgress(progressOTA);
+    ArduinoOTA.onError(errorOTA);
+
+    bool result = LittleFS.begin(true);
+    Serial.print("result: ");
+    Serial.println(result);
+
+    Serial.println("Starting WEB Flasher");
+    if (LittleFS.exists("/web/page.html"))
+    {
+        LittleFS.remove("/web/page.html");
+    }
+    if (LittleFS.exists("/web/page.js"))
+    {
+        LittleFS.remove("/web/page.js");
+    }
+    if (LittleFS.exists("/web/common.css"))
+    {
+        LittleFS.remove("/web/common.css");
+    }
+    File file = LittleFS.open("/web/page.html", "w",true);
+    file.print(indexhtml());
+    file.flush();
+    file.close();
+    File file2 = LittleFS.open("/web/page.js", "w",true);
+    file2.print(indexjs());
+    file2.flush();
+    file2.close();
+    File file3 = LittleFS.open("/web/common.css", "w",true);
+    file3.print(indexcss());
+    file3.flush();
+    file3.close();
+    file = LittleFS.open("/web/config.html", "w",true);
+    file.print(configHTML());
+    file.flush();
+    file.close();
+    file2 = LittleFS.open("/web/config.js", "w",true);
+    file2.print(configJS());
+    file2.flush();
+    file2.close();
+    file3 = LittleFS.open("/web/config.css", "w",true);
+    file3.print(configCSS());
+    file3.flush();
+    file3.close();
+    file = LittleFS.open("/web/medium-slider.css", "w",true);
+    file.print(slidersCSS());
+    file.flush();
+    file.close();
+    printDir("/");
+}
+
+void loop()
+{
+    ArduinoOTA.handle();
+    delay(100);
+    if (millis() > 600 * 1000)
+    {
+        ESP.restart();
+    }
+}

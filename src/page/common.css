@@ -1,0 +1,305 @@
+@charset "utf-8";
+
+.settings-title{
+    font-family: 'Open Sans', sans-serif;
+    width: 60%;
+    text-align: center;
+    margin-right: 20%;
+}
+.sensorList
+{
+   margin: 5px;
+   text-align: center;
+}
+.outer-div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  /* //  height: 100vh; */
+    width: 50vw;
+    margin-left: 25vw;
+    margin-top: 1vh;
+}
+
+.card h2 {
+    margin: 5px;
+}
+
+.ir-input {
+    border-radius: 30px;
+    margin: 5px;
+    text-align: center;
+}
+
+/* Style the outer div */
+.card-container {
+    text-align: center;
+    border: 1px solid #ccc;
+    padding: 20px;
+   
+    /* zoom: %; */
+    border-radius: 10px;
+}
+
+/* Style the temperatureDiv */
+.temperatureDiv {
+    font-size: 24px;
+    padding: 10px;
+    margin: 5px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.mqtt-good {
+    color: darkgreen;
+}
+
+.mqtt-bad {
+    color: darkred;
+}
+
+.card {
+    margin: 5px;
+}
+
+.ir-buttons-container {
+    justify-content: space-around;
+}
+
+.ir-buttons {
+    border-radius: 5px;
+    height: 40px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    min-width: 40px;
+    margin: 20px;
+}
+
+button
+{
+    font-family:Verdana, Geneva, Tahoma, sans-serif;
+}
+
+.defaultBackDiv
+{
+    margin: 5px;
+    display: flex; 
+    align-content: center;
+
+}
+.defaultBackDiv label{
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+}
+.slider-outer-div
+{
+    display: flex;
+    justify-content: space-between;
+    margin: 5px;
+}
+
+.back-arrow {
+    width: 0;
+    height: 0;
+    border-left: 20px solid transparent;
+    border-right: 20px solid transparent;
+    border-bottom: 20px solid #333; /* Change this color to your desired arrow color */
+    transform: rotate(270deg);
+    position: relative;
+    top: 50%;
+    left: 50%;
+    margin-top: -10px; /* Half of the border height */
+    margin-left: -10px; /* Half of the border width */
+  }
+  
+#body {
+    flex-direction: row;
+}
+
+.settings-button {
+    border-radius: 25px;
+    font-family: 'Open Sans', sans-serif;
+    width: 100px;
+}
+
+.set-div {
+    font-family: Verdana, Geneva, Tahoma, sans-serif;
+    justify-content: space-evenly;
+    flex-direction: row;
+    display: flex;
+    margin: 5px;
+
+}
+
+.set-div input {
+    margin: 5px;
+    text-align: center;
+}
+
+.set-button {
+    margin: 5px;
+    font-size: ;
+    height: 30px;
+    width: 50px;
+    min-width: fit-content;
+    border-radius: 10px;
+}
+
+input[type = "time"]
+{
+    font-size: ;
+}
+
+.outer-div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 1vh;
+}
+
+.card h2 {
+    margin: 5px;
+}
+
+.ir-input {
+    border-radius: 30px;
+    margin: 5px;
+    text-align: center;
+}
+
+/* Style the outer div */
+.card-container {
+    text-align: center;
+    border: 1px solid #ccc;
+    padding: 20px;
+    border-radius: 10px;
+}
+
+/* Style the temperatureDiv */
+.temperatureDiv {
+    font-size: 24px;
+    padding: 10px;
+    margin: 5px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+}
+
+.mqtt-good {
+    color: darkgreen;
+}
+
+.mqtt-bad {
+    color: darkred;
+}
+
+.card {
+    margin: 5px;
+}
+
+.Idle {
+    color: darkgreen;
+}
+
+.Cooling {
+    color: aqua;
+}
+
+.Warming {
+    color: darkred;
+}
+
+.ir-buttons-container {
+    justify-content: space-around;
+}
+
+.ir-buttons {
+    border-radius: 5px;
+    height: 40px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    min-width: 40px;
+    margin: 20px;
+}
+
+footer {
+    text-align: center;
+    width: 100%;
+    justify-content: center;
+    align-items: center;
+    float: none;
+}
+
+body {
+    background-color: #1DE9B6;
+}
+
+.stepper-input {
+    display: flex;
+    font-size: 1.5em;
+    justify-content: center;
+    padding: 50px;
+}
+
+.btn {
+    cursor: pointer;
+    padding: 1em;
+    color: #fff;
+    background-color: #121212;
+    border: 1px solid #121212;
+}
+
+.btn:hover {
+    background-color: #fff;
+    color: #121212;
+}
+
+.btn-left {
+    border-radius: 10px 0 0 10px;
+}
+
+.btn-right {
+    border-radius: 0 10px 10px 0;
+}
+
+.input-box {
+    border: 1px solid #121212;
+    text-align: center;
+}
+
+.step-buttons-box {
+    justify-content: center;
+    margin: 0px;
+    display: flex;
+    align-items: center;
+}
+
+.step-buttons-btn {
+    justify-content: center;
+    display: flex;
+    align-items: center;
+    text-align: center;
+    height: 25px;
+    width: 25px;
+    background: transparent;
+    border-color: transparent;
+    border: transparent 0px;
+    border-radius: 10px;
+    transition: background-color 2s ease-out 100ms
+}
+
+.step-buttons-btn:hover {
+    animation: linear 1s;
+    color: white;
+    background: #6c6c6c;
+    border-color: white;
+    border-radius: 10px;
+}
+
+.step-buttons-minus:hover {
+    color: aqua;
+}
+
+.step-buttons-plus:hover {
+    color: darkred;
+}
