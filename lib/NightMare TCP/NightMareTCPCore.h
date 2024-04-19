@@ -27,7 +27,7 @@ typedef enum
   ThreeCharHeaders = 2,
   // String is sent as length:message and when new data arrives, the data is read looking for the size until it reaches a colon then it outputs the msg of that size;
   SizeColon = 1,
-  // String is sent and recieved as is.
+  // String is sent and received as is.
   AllAvailable = 0
 } TransmissionMode;
 

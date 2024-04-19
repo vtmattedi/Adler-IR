@@ -108,11 +108,11 @@ private:
    //       (MQTT_MAX_HEADER_SIZE - <returned size>) bytes into the buffer
    size_t buildHeader(uint8_t header, uint8_t* buf, uint16_t length);
    IPAddress ip;
-   const char* domain;
    uint16_t port;
    Stream* stream;
    int _state;
 public:
+   const char* domain;
    PubSubClient();
    PubSubClient(Client& client);
    PubSubClient(IPAddress, uint16_t, Client& client);

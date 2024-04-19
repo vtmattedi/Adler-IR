@@ -6,6 +6,7 @@
 #include <../lib/pubsubclient-2.8/src/PubSubClient.h>
 #include <../include/Creds/WifiCred.h>
 #include <../include/Creds/HiveMQCred.h>
+#include <../include/Version.h>
 #include <../lib/NightMare TCP/NightMareTCPServer.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -13,6 +14,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <NightMareNetWork.h>
 
 #ifdef ES8266
 #include <ESP8266WebServer.h>
@@ -57,16 +59,16 @@
 #define NUM_OF_SENSORS 20   // Num of sensors held by the Sensors Struct.
 
 // AC defines.
-#define IDLE_TOLERANCE 0.3  // The change in temperature to which we consider it idle.
-#define AC_MAX_TEMP 30      // MAX temperature of my AC unit.
-#define AC_MIN_TEMP 18      // MIN temperature of my AC unit.
-#define STALE_TIMESTAMP 300 // The time (in seconds) to consider a reading stale.
+#define IDLE_TOLERANCE 0.3 // The change in temperature to which we consider it idle.
+#define AC_MAX_TEMP 30     // MAX temperature of my AC unit.
+#define AC_MIN_TEMP 18     // MIN temperature of my AC unit.
+#define STALE_TIMESTAMP 40 // The time (in seconds) to consider a reading stale.
 
 // Serial Defines.
-#define COMPILE_SERIAL // comment to prevent Serial to be compiled.
-                       // #define PRINT_FIRMWARE   // uncomment to print firmware info during setup useless if not compiling serial.
-                       // #define WIFI_SCAN        // uncomment to print a wifi scan during setup useless if not compiling serial.
-#define USE_OTA        // comment to prevent OTA to be compiled.
+// #define COMPILE_SERIAL // comment to prevent Serial to be compiled.
+// #define PRINT_FIRMWARE   // uncomment to print firmware info during setup useless if not compiling serial.
+// #define WIFI_SCAN        // uncomment to print a wifi scan during setup useless if not compiling serial.
+#define USE_OTA // comment to prevent OTA to be compiled.
 
 #define CONFIG_FILENAME "/configs.cfg" // the default name of the configuration file.
 #define WebServerPort 80               // Web Server Port (default is 80).
@@ -130,6 +132,8 @@ struct TempWithTime
   }
 };
 
+TempWithTime get_last_twt();
+
 /// @brief Temperature State enum.
 enum Temp_State
 {
@@ -184,12 +188,14 @@ WebServer _WebServer(WebServerPort); // Web Server object.
 NightMareTCPServer TcpServer(TcpPort); // Tcp server object.
 
 // TCP-HiveMQ Definitions.
-WiFiClientSecure hive_client;     // WiFi Client for MQTT.
-PubSubClient HiveMQ(hive_client); // HiveMQ MQTT object.
+WiFiClientSecure hive_client;       // WiFi Client for MQTT.
+PubSubClient HiveMQ(hive_client);   // HiveMQ MQTT object.
+WiFiClient local_client;            // WiFi Client for local MQTT.
+PubSubClient LocalMQ(local_client); // local MQTT object.
 
 /// @brief Sends an IR code, using the params of MY AC unit.
 /// @param Code The code to be sent.
-void sendIR(uint32_t);
+void sendIR(uint32_t Code, String reason, bool send_to_skynet = true);
 
 /// @brief Turns on or off the LED respecting the configuration option.
 /// @param state The State that you want the LED to be.
@@ -452,6 +458,10 @@ struct Internals
   String sensorsAvailable = "Onboard+";
   bool ldrState = false;
   int last_LDR_val = 0;
+  /// @brief Delay the shutdown of the AC for the day
+  bool sleep_in = false;
+  double baseLineTemp = 0;
+  String localMqttServerIp;
 
   String toString()
   {
@@ -513,6 +523,13 @@ struct Configs
   bool use_door_sensor = false;
   /// @brief The time between the door opening and the AC shutting down in seconds.
   int door_sensor_delay = 90;
+  /// @brief Enables a warmup of the room before shutting down
+  bool warm_up = false;
+  /// @brief Number of hours to warm up
+  uint8_t warm_up_hours = 3;
+  /// @brief Set each step to 0.5 if true. default is 1 degree.
+  bool half_warm_up_step = false;
+
   /// @brief Saves the configs to a String.
   /// @return a String that represents the configuration.
   String ToString()
@@ -529,15 +546,21 @@ struct Configs
     result += "IdleTolerance:" + String(IdleTolerance) + ";";
     result += "use_door_sensor:" + String(use_door_sensor) + ";";
     result += "door_sensor_delay:" + String(door_sensor_delay) + ";";
-    MqttSend("/config", result);
+    result += "warm_up:" + String(warm_up) + ";";
+    result += "warm_up_hours:" + String(warm_up_hours) + ";";
+    result += "half_warm_up_step:" + String(half_warm_up_step) + ";";
     return result;
+  }
+  void SendToMqtt()
+  {
+    MqttSend("/config", ToString());
   }
 
   /// @brief Loads the values with a previously saved configuration String.
   /// @param data a String that represents the configuration.
   void FromString(const String &data)
   {
-    uint8_t pos = 0;
+    uint16_t pos = 0;
     while (pos < data.length())
     {
       int colonIndex = data.indexOf(':', pos);
@@ -573,12 +596,17 @@ struct Configs
         use_door_sensor = (value == "1");
       else if (key.equals("door_sensor_delay"))
         door_sensor_delay = value.toInt();
+      else if (key.equals("warm_up"))
+        warm_up = (value == "1");
+      else if (key.equals("warm_up_hours"))
+        warm_up_hours = value.toInt();
+      else if (key.equals("half_warm_up_step"))
+        half_warm_up_step = (value == "1");
 
       pos = semicolonIndex + 1;
     }
-
-    String s = ToString();
 #ifdef COMPILE_SERIAL
+    String s = ToString();
     s.replace(";", "\n");
     Serial.printf("--------NEW CONFIG--------\n%s\n---------------------", s.c_str());
 #endif
@@ -606,6 +634,7 @@ struct Configs
     configfile.print(this->ToString());
     configfile.flush();
     configfile.close();
+    SendToMqtt();
     return true;
   }
 
@@ -620,6 +649,7 @@ struct Configs
       return false;
     File configfile = LittleFS.open(filename, "r");
     FromString(configfile.readString());
+    SendToMqtt();
     return true;
   }
   /// @brief Compares the time now versus the one saved on shutdowntime.
@@ -628,11 +658,52 @@ struct Configs
   {
     if (!AcShutdown)
       return false;
-    if (hour() == atoi(ShutdownTime.substring(0, ShutdownTime.indexOf(":")).c_str()) && minute() == atoi(ShutdownTime.substring(ShutdownTime.indexOf(":") + 1).c_str()))
+
+    byte _hour = atoi(ShutdownTime.substring(0, ShutdownTime.indexOf(":")).c_str());
+    byte _min = atoi(ShutdownTime.substring(ShutdownTime.indexOf(":") + 1).c_str());
+    if (control_variables.sleep_in)
+      _hour += 3;
+
+    if (_hour == hour() && _min == minute())
+    {
+      // Disarm sleep_in
+      if (control_variables.sleep_in)
+        control_variables.sleep_in = false;
       return true;
-    else
-      return false;
+    }
+
     return false;
+  }
+
+  uint8_t GetWarmUp()
+  {
+#define WARM_DO_NOTHING 0xff
+    if (!AcShutdown)
+      return WARM_DO_NOTHING;
+    if (!warm_up)
+      return WARM_DO_NOTHING;
+    int8_t _hour = atoi(ShutdownTime.substring(0, ShutdownTime.indexOf(":")).c_str());
+    int8_t _min = atoi(ShutdownTime.substring(ShutdownTime.indexOf(":") + 1).c_str());
+    int8_t diff = _hour - hour();
+
+    if (diff < 0)
+    {
+      diff = 24 + diff;
+    }
+
+    if (minute() < _min)
+      diff += 1;
+
+    if (diff > warm_up_hours || diff == 0)
+    {
+      diff = WARM_DO_NOTHING;
+    }
+    if (diff != WARM_DO_NOTHING)
+    {
+      diff = warm_up_hours - diff + 1;
+    }
+    // Serial.printf("in: \"%s\" -> res: %u\n", timestampToDateString(time, OnlyTime).c_str(), (uint8_t)diff);
+    return diff;
   }
 };
 
@@ -665,21 +736,37 @@ String MqttTopic(String topic)
 /// @param retained Retained message or normal
 void MqttSend(String topic, String message, bool insertOwner, bool retained)
 {
+  bool local = LocalMQ.connected();
   if (insertOwner)
     topic = MqttTopic(topic);
-  HiveMQ.publish(topic.c_str(), message.c_str(), retained);
+  if (local)
+  {
+    LocalMQ.publish(topic.c_str(), message.c_str(), retained);
+  }
+  else
+  {
+    HiveMQ.publish(topic.c_str(), message.c_str(), retained);
+  }
+#ifdef COMPILE_SERIAL
+  Serial.printf("[%s]Sending '%s' to '%s'\n",local?"Local":"HiveMQ" topic.c_str(), message.c_str());
+#endif
 }
 
 /// @brief Attempts to connect, reconnect to the MQTT broker .
 /// @return True if successful or false if not.
-bool MQTT_Reconnect()
+bool MQTT_Reconnect(PubSubClient &MqttClient, String info)
 {
   String clientID = DEVICE_NAME;
+  clientID += "-0x";
   clientID += String(random(), HEX);
-  if (HiveMQ.connect(clientID.c_str(), MQTT_USER, MQTT_PASSWD))
+#ifdef COMPILE_SERIAL
+  Serial.printf("%s;\n", MqttClient.domain);
+  Serial.printf("Atemptting to connect to: %s\n", info.c_str());
+#endif
+  if (MqttClient.connect(clientID.c_str(), MQTT_USER, MQTT_PASSWD))
   {
-    bool sub = HiveMQ.subscribe("#/sensors/#");
-    HiveMQ.subscribe(MqttTopic("/console/in").c_str());
+    bool sub = MqttClient.subscribe("#");
+    // HiveMQ.subscribe(MqttTopic("/console/in").c_str());
 #ifdef COMPILE_SERIAL
     Serial.printf("MQTT Connected subscribe was: %s\n", sub ? "success" : "failed");
 #endif
@@ -688,7 +775,7 @@ bool MQTT_Reconnect()
   else
   {
 #ifdef COMPILE_SERIAL
-    Serial.printf("Can't Connect to MQTT Error Code : %d\n", HiveMQ.state());
+    Serial.printf("Can't Connect to MQTT Error Code : %d\n", MqttClient.state());
 #endif
     return false;
   }
@@ -750,7 +837,7 @@ void errorOTA(ota_error_t error)
 #pragma endregion
 
 /// @brief Struct to hold last time something was done.
-struct Timers_Last_Values
+struct OldTimers_Last_Values
 {
   uint temperature = 0;
   uint sync_time = 0;
@@ -763,7 +850,219 @@ struct Timers_Last_Values
 };
 
 /// @brief Object holding last time something was done.
-Timers_Last_Values Timers;
+OldTimers_Last_Values OldTimers;
+
+struct LeakageDetector
+{
+#define MIN_THRESHOLD 5
+  TempWithTime last_twt;
+  bool last_state = false;
+
+  void changeState(bool new_state, TempWithTime Twt)
+  {
+    last_twt = Twt;
+    last_state = new_state;
+  }
+
+  bool ProbableRealState(TempWithTime Twt)
+  {
+    int delta_time = Twt.timestamp - last_twt.timestamp;
+    int delta_temp = Twt.temperature - last_twt.temperature;
+
+    if (delta_time > MIN_THRESHOLD * 60)
+    {
+      return delta_temp > 0;
+    }
+  }
+};
+
+enum BehaviourResult
+{
+  NOT_READY,
+  ON,
+  OFF,
+  ON_STABLE,
+  OFF_STABLE,
+  ON_NOT_E,
+  OFF_NOT_E,
+  INCONCLUSIVE_TIME,
+  INCONCLUSIVE_CHANGE_ON_SENSOR,
+  INCONCLUSIVE_DOOR_OPEN
+
+};
+
+String behaviourResultToString(BehaviourResult result)
+{
+  switch (result)
+  {
+  case NOT_READY:
+    return "NOT_READY";
+  case ON:
+    return "ON";
+  case OFF:
+    return "OFF";
+  case ON_STABLE:
+    return "ON_STABLE";
+  case OFF_STABLE:
+    return "OFF_STABLE";
+  case ON_NOT_E:
+    return "ON_NOT_E";
+  case OFF_NOT_E:
+    return "OFF_NOT_E";
+  case INCONCLUSIVE_TIME:
+    return "INCONCLUSIVE_TIME";
+  case INCONCLUSIVE_CHANGE_ON_SENSOR:
+    return "INCONCLUSIVE_CHANGE_ON_SENSOR";
+  case INCONCLUSIVE_DOOR_OPEN:
+    return "INCONCLUSIVE_DOOR_OPEN";
+  default:
+    return "UNKNOWN"; // In case of unknown value
+  }
+}
+
+struct BehaviourAnalyst
+{
+#define MINIMUM_SECONDS 600
+  uint door_timestamp = 0;
+  uint16_t door_open_last_10_min = 0;
+  TempWithTime state_change_twt;
+  uint8_t tempState;
+  bool powerState;
+  bool auth = false;
+  BehaviourResult last_result;
+
+  BehaviourResult AnalyzeBehaviour(TempWithTime current_twt, bool force = false)
+  {
+    if (current_twt.timestamp - state_change_twt.timestamp < MINIMUM_SECONDS && !force)
+      return NOT_READY;
+    BehaviourResult result;
+    double delta_temp = current_twt.temperature - state_change_twt.temperature;
+    int delta_time = current_twt.timestamp - state_change_twt.timestamp;
+    int8_t fallback_detect = -1 * current_twt.fallback + 1 * state_change_twt.fallback;
+    String fallback = "no fallback change";
+    if (fallback_detect != 0)
+    {
+      fallback = "Fallback changed: went from:";
+      fallback += state_change_twt.fallback;
+      fallback += " to: ";
+      fallback += current_twt.fallback;
+    }
+
+    if (door_timestamp > 0)
+    {
+      door_open_last_10_min += now() - door_timestamp;
+      door_timestamp = now();
+    }
+    String assesment = "";
+
+    if (fallback_detect != 0)
+    {
+      assesment += "inc-fb-trig;";
+      result = INCONCLUSIVE_CHANGE_ON_SENSOR;
+    }
+    if (delta_time < 5 * 60)
+    {
+      result = INCONCLUSIVE_TIME;
+      assesment += "inc-Time;";
+    }
+    if (door_open_last_10_min > 0.5 * delta_time)
+    {
+      result = INCONCLUSIVE_DOOR_OPEN;
+      assesment += "inc-Door;";
+    }
+    if (tempState > 0)
+    {
+      if (_abs(current_twt.temperature - tempState) > 2)
+      {
+        assesment += "off-ne;";
+        result = OFF_NOT_E;
+      }
+      else
+      {
+        assesment += "on-ne;";
+        result = ON_NOT_E;
+      }
+    }
+    else
+    {
+      if (delta_temp > 0)
+      {
+        assesment += "off-ne2;";
+        result = OFF_NOT_E;
+      }
+      else
+      {
+        assesment += "on-ne2;";
+        result = ON_NOT_E;
+      }
+    }
+    if (delta_temp > 0.3 && !powerState)
+    {
+      assesment += "off;";
+      result = OFF;
+    }
+    if (delta_temp < -0.3 && powerState)
+    {
+      assesment += "on;";
+      result = ON;
+    }
+    if ((double)_abs(current_twt.temperature - (double)tempState) < 1)
+    {
+      assesment += powerState ? "on-stable;" : "off-stable;";
+      result = powerState ? ON_STABLE : OFF_STABLE;
+    }
+
+    String res = "Dtime: ";
+    res += delta_time;
+    res += " Dtemp: ";
+    res += delta_temp;
+    res += " Door: ";
+    res += door_open_last_10_min;
+    res += "s. Expc: ";
+    res += powerState;
+    res += " Result: ";
+    res += assesment;
+    res += " fb: ";
+    res += fallback;
+    res += " code: ";
+    res += result;
+    res += " Act: ";
+    res += ((result == OFF || result == OFF_STABLE || result == OFF_NOT_E) && powerState) || ((result == ON || result == ON_STABLE || result == ON_NOT_E) && !powerState);
+    door_open_last_10_min = 0;
+    state_change_twt = current_twt;
+    MqttSend("/Debug", res);
+    if (auth)
+    {
+      if (((result == OFF || result == OFF_STABLE || result == OFF_NOT_E) && powerState) || ((result == ON || result == ON_STABLE || result == ON_NOT_E) && !powerState))
+        sendIR(POWER, "From B.A. -> result != analysis", false);
+    }
+
+    last_result = result;
+    return result;
+  }
+
+  void ChangePowerState(bool powerstate)
+  {
+    powerState = powerstate;
+    state_change_twt = get_last_twt();
+  }
+
+  void ChangeTempState(uint8_t newTempState)
+  {
+    tempState = newTempState;
+  }
+
+  void DoorAnalysis(uint32_t timestamp)
+  {
+    if (timestamp == 0)
+    {
+      door_open_last_10_min += (now() - door_timestamp);
+      door_timestamp = 0;
+    }
+    else
+      door_timestamp = now();
+  }
+};
 
 /// @brief Structure to take control of my AC unit.
 struct Assimilate
@@ -778,6 +1077,7 @@ struct Assimilate
   // control temperature
   bool controlingTemperature = false;
   double controlTemp = 24;
+  double lastKnowTemp = -1;
   uint controlStartTimestamp = 0;
 
   // analyze behaviour --> retake control in case of control loss
@@ -809,13 +1109,34 @@ struct Assimilate
   TempWithTime _tempTenMinAgo;
   TempWithTime _tempFiveMinAgo;
 
+  // Warm_up and Shutdown
+#define STOP_TARGET_AND_TURN_OFF -1
+  // Last Warm_up Delta-Hour result;
+  byte last_warmup_result;
+  // Baseline Target to Warm up
+  double baseline_target;
+  // Flag to not repeat sending shutdown command forever
+  bool ac_shutdown_sent = false;
+  bool pause = false;
+  bool reinit_ac = false;
+
+  // Analyse the sensor behaviour to catch sync errors and correct them
+  BehaviourAnalyst Freud;
+
   /// @brief Maintains the AC controller. Should be fed at frequently to work properly.
   /// @param twt The current state of the temperature, timestamp, fallback.
   void run(TempWithTime twt)
   {
+    if (pause)
+      return;
     if (millis() - lastRun > interval)
     {
       lastRun = millis();
+      lastKnowTemp = twt.temperature;
+      bool send_WAIT = false;
+      int trig_id = -1;
+      bool doorHandled = false;
+      byte tempBegin = tempState;
       if (takeControlRunning)
       {
         TakeControl(twt);
@@ -831,26 +1152,171 @@ struct Assimilate
       {
         _tempFiveMinAgo = twt;
       }
-      if (hardware_sleep - now() >= 0 && hardware_sleep_requested)
+      if (now() >= hardware_sleep && hardware_sleep_requested)
       {
         powerState = !powerState;
         hardware_sleep_requested = false;
+        publishReport();
+      }
+      if (now() >= software_sleep && software_sleep_requested)
+      {
+        setTaget(STOP_TARGET_AND_TURN_OFF, "Software Sleep Trigger.");
+        // String Sdebug = "Software sleep trigerred: ";
+        // Sdebug += software_sleep;
+        // Sdebug += ". now: ";
+        // Sdebug += timestampToDateString(now());
+        // Sdebug += ". Expected: ";
+        // Sdebug += timestampToDateString(software_sleep);
+        // MqttSend("/Debug", Sdebug);
+        software_sleep_requested = false;
+        publishReport();
       }
       if (door_time > 0 && Configuration.use_door_sensor)
       {
         if (now() - door_time > Configuration.door_sensor_delay)
         {
-          setPower(false);
+          doorHandled = true;
+          if (powerState && !controlingTemperature)
+            reinit_ac = true;
+          setPower(false, "Door open. Stopping AC");
         }
 
         if (now() - door_time > DOOR_SHUTDOWN_MINUTES * 60)
         {
-          setTaget(0);
+          doorHandled = true;
+          setTaget(STOP_TARGET_AND_TURN_OFF, "Door time is bigger than 30 Min");
+          reinit_ac = false;
           door_time = 0;
         }
-        return;
       }
-      handleTarget(twt.temperature);
+      if (door_time == 0 && reinit_ac)
+      {
+        setPower(true, "Door was closed. Restarting AC");
+        reinit_ac = false;
+      }
+
+      uint8_t warm_up_result = Configuration.GetWarmUp();
+      if (warm_up_result != last_warmup_result)
+      {
+        send_WAIT = true;
+        trig_id = 1;
+        last_warmup_result = warm_up_result;
+        // if (warm_up_result != WARM_DO_NOTHING)
+        // {
+        //   double warm_up_val = warm_up_result;
+        //   if (Configuration.half_warm_up_step)
+        //     warm_up_val = warm_up_val / 2;
+        //   setTaget(baseline_target + warm_up_val, true);
+        //   MqttSend("/Debug", String("warm: ") + String(warm_up_result));
+        //   MqttSend("/Debug", Report());
+        // }
+      }
+
+      // Runs the Skynet for AC Control
+      if (Configuration.CompareTime())
+      {
+        if (!ac_shutdown_sent)
+        {
+          trig_id = 2;
+
+          send_WAIT = true;
+          if ((Configuration.TemperatureThreshold &&
+               twt.temperature <= Configuration.TemperatureThreshold - IDLE_TOLERANCE) ||
+              !Configuration.TemperatureThreshold)
+          {
+            // turn off the ac and stops the temperature control
+            setTaget(STOP_TARGET_AND_TURN_OFF, "AC Schedule Trigger", false, false);
+            control_variables.ac_shutdown_sent = true;
+          }
+          publishReport();
+        }
+      }
+      else
+        ac_shutdown_sent = false;
+      BehaviourResult res = Freud.AnalyzeBehaviour(twt);
+
+      if (res != NOT_READY)
+      {
+        send_WAIT = true;
+        trig_id = 3;
+        // ReinforceIfNeeded(res);
+        // MqttSend("/Debug", Report());
+      }
+      if (doorHandled)
+        ;
+      else if (handleTarget(twt.temperature))
+      {
+        send_WAIT = true;
+        trig_id = 4;
+      }
+      if (send_WAIT)
+        whatAmIThinking(tempBegin, res, warm_up_result, trig_id);
+    }
+  }
+  void whatAmIThinking(uint8_t tempBegin, BehaviourResult res, uint8_t warm_up_result, int trig_id)
+  {
+    double dt = lastKnowTemp - controlTemp;
+    if (controlTemp < 0)
+      dt = 0;
+    String wait = "TRIGID:[";
+    wait += trig_id;
+    wait += "] - ";
+    wait += "dt = ";
+    wait += dt;
+    wait += "; ";
+    if (_abs(dt) > IDLE_TOLERANCE)
+    {
+      wait += dt > 0 ? "too hot, turn on AC;" : "too cold, turn on AC;";
+    }
+    if (controlTemp > 0)
+    {
+      if (_abs(controlTemp - tempBegin) > 1.5)
+      {
+        wait += "Adjusting temp from:";
+        wait += tempBegin;
+        wait += " to:";
+        wait += tempState;
+        wait += "; ";
+      }
+    }
+
+    wait += "warm_up_result = ";
+    wait += warm_up_result;
+    wait += "; ";
+    if (warm_up_result != WARM_DO_NOTHING)
+    {
+      wait += "warm_up triggred ajusting temp to: ";
+      wait += baseline_target + warm_up_result;
+      wait += "; ";
+    }
+
+    wait += "BA-res = ";
+    wait += res;
+    wait += "; ";
+    if (res != NOT_READY)
+    {
+      wait += "BA triggred: ";
+      wait += behaviourResultToString(res);
+      wait += "; Act: ";
+      wait += (((res == OFF || res == OFF_STABLE || res == OFF_NOT_E) && powerState) || ((res == ON || res == ON_STABLE || res == ON_NOT_E) && !powerState));
+      wait += "; ";
+    }
+    wait += "Sleep Time? = ";
+    wait += Configuration.CompareTime();
+    wait += "; ";
+
+    MqttSend("/WAIT", wait);
+  }
+
+  void ReinforceIfNeeded(BehaviourResult res)
+  {
+    if ((res == ON || res == ON_STABLE || res == ON_NOT_E) && !powerState)
+    {
+      sendIR(POWER, "From Skynet -> result != analysis", false);
+    }
+    if ((res == OFF || res == OFF_STABLE || res == OFF_NOT_E) && powerState)
+    {
+      sendIR(POWER, "From Skynet -> result != analysis", false);
     }
   }
 
@@ -859,6 +1325,7 @@ struct Assimilate
   void ExpectBehaviour(uint32_t whatWasSent)
 
   {
+
     if (!areWeInControl)
       return;
     if (countDownMode)
@@ -925,8 +1392,9 @@ struct Assimilate
   }
 
   /// @brief Not yet implemented. It will analyze the room temperature to see if we still have the control of the AC.
-  void AnalyzeBehaviour()
+  void AnalyzeBehaviour(TempWithTime current_twt, bool force = false)
   {
+
     return;
   }
 
@@ -962,7 +1430,7 @@ struct Assimilate
 
   /// @brief Sets the the AC temperature controller target.
   /// @param target The desired room temperature.
-  void setTaget(double target)
+  void setTaget(double target, String reason, bool it_is_from_warm = false, bool send_to_mqtt = true)
   {
     if (!areWeInControl)
     {
@@ -974,8 +1442,13 @@ struct Assimilate
     if (target < 18 || target > 30)
     {
       controlingTemperature = false;
+      if (target == STOP_TARGET_AND_TURN_OFF)
+      {
+        setPower(false, reason);
+      }
       MqttSend("/Control", "Control off");
-      publishReport();
+      if (send_to_mqtt)
+        publishReport();
       return;
     }
     else
@@ -986,10 +1459,12 @@ struct Assimilate
       controlTemp = target;
       MqttSend("/Control", msg);
       controlingTemperature = true;
+      if (!it_is_from_warm)
+        baseline_target = target;
     }
-    if (setPower(true))
+    if (setPower(true, reason))
       delay(150);
-    SetTemperature(target > 18 ? target - 1 : target);
+    SetTemperature(target > 18 ? target - 1 : target, reason);
   }
 
   /// @brief Gets info from the AC temperature controller.
@@ -1007,23 +1482,26 @@ struct Assimilate
 
   /// @brief Handles the AC control to maintain the desired temperature.
   /// @param currentTemperature The current temperature read.
-  void handleTarget(double currentTemperature)
+  bool handleTarget(double currentTemperature)
   {
+    bool oldPwrState = powerState;
     if (!controlingTemperature || !areWeInControl)
-      return;
+      return false;
     else if (currentTemperature > (float)controlTemp + Configuration.IdleTolerance)
     {
-      setPower(true);
+      setPower(true, "Handle Target Temperature: too hot");
       if (tempState - controlTemp > 1)
       {
-        SetTemperature(controlTemp > 18 ? controlTemp - 1 : 18);
+        SetTemperature(controlTemp > 18 ? controlTemp - 1 : 18, "Handle Target: adjusting AC");
       }
+      return !oldPwrState;
     }
     else if (currentTemperature < (float)controlTemp - Configuration.IdleTolerance)
     {
-
-      setPower(false);
+      setPower(false, "Handle Target Temperature: too cold");
+      return oldPwrState;
     }
+    return false;
   }
 
   /// @brief Starts the assessment of the AC state.
@@ -1035,19 +1513,21 @@ struct Assimilate
 #ifdef COMPILE_SERIAL
     Serial.println("Skynet Starting control... stop using the ac remote now.");
 #endif
-    sendIR(POWER);
+    sendIR(POWER, "Start Take Control from SKYNET");
     return;
   }
 
   /// @brief Sets the power state of the AC if the state is known.
   /// @param newPowerState The state you want the AC to be in.
-  bool setPower(bool newPowerState)
+  bool setPower(bool newPowerState, String reason)
   {
     if (!areWeInControl)
       return false;
     if (powerState != newPowerState)
     {
-      sendIR(POWER);
+      sendIR(POWER, reason);
+      powerState = newPowerState;
+      Freud.ChangePowerState(newPowerState);
       return true;
     }
     return false;
@@ -1115,13 +1595,13 @@ struct Assimilate
       bool powerissoff = !powerState;
       if (powerissoff)
       {
-        sendIR(POWER);
+        sendIR(POWER, "Take Control End: Turning on Power");
         delay(200);
       }
-      SetTemperature(24, true);
+      SetTemperature(24, "Take Control End: Setting Temp", true);
       if (powerissoff)
       {
-        sendIR(POWER);
+        sendIR(POWER, "Take Control End: Turning off Power");
         delay(200);
       }
       tempState = 24;
@@ -1135,35 +1615,50 @@ struct Assimilate
 
   /// @brief Sets AC shutdown.
   /// @param hours_till_shutdown Hours to be set.
-  void Hardware_AC_Sleep(byte hours_till_shutdown)
+  void Hardware_AC_Sleep(byte hours_till_shutdown, String reason)
   {
-    setTaget(0);
+    setTaget(0, reason);
     if (hours_till_shutdown > 12 || hours_till_shutdown == 0)
       return;
     // Turn off current schedule
     if (countDownMode)
     {
-      sendIR(COUNT_DOWN);
+      sendIR(COUNT_DOWN, reason);
       delay(200);
     }
 
     // Start shedule on AC
-    sendIR(COUNT_DOWN);
+    sendIR(COUNT_DOWN, reason);
     delay(200);
 
     for (size_t i = 0; i < hours_till_shutdown; i++)
     {
-      sendIR(PLUS);
+      sendIR(PLUS, reason);
       delay(200);
     }
     // Save and Exit.
-    sendIR(COUNT_DOWN);
+    sendIR(COUNT_DOWN, reason);
+  }
+
+  /// @brief Sets AC shutdown from within the structure.
+  /// @param minutes_till_shutdown Minutes to be set.
+  void Software_AC_sleep(uint16_t minutes_till_shutdown)
+  {
+    software_sleep = now() + minutes_till_shutdown * 60;
+    software_sleep_requested = true;
+    // String Sdebug = "Software sleep requested: ";
+    // Sdebug += software_sleep;
+    // Sdebug += ". input was: ";
+    // Sdebug += minutes_till_shutdown;
+    // Sdebug += ". Expected Shutdown: ";
+    // Sdebug += timestampToDateString(software_sleep);
+    // MqttSend("/Debug", Sdebug);
   }
 
   /// @brief Sets the temperature of the AC, also turns it on if it is not (if not on forced mode).
   /// @param Target The target temperature.
   /// @param force Force the temperature to be that one targeted, ignore the known temperature.
-  void SetTemperature(byte Target, bool force = false)
+  void SetTemperature(byte Target, String reason, bool force = false)
   {
     // Serial.printf("trying to set Temp c:%d t: %d f: %d control: %d ==> ",tempState,Target,force,areWeInControl);
     if (areWeInControl && !force)
@@ -1178,6 +1673,10 @@ struct Assimilate
 #endif
       if (Target == tempState || Target < AC_MIN_TEMP || Target > AC_MAX_TEMP)
         return;
+      bool off = !powerState;
+      if (off)
+        setPower(true, reason + " -->Turing on AC to set temp.");
+      
       bool targetIsGreater = Target > tempState;
       int steps = Target - tempState;
       if (!targetIsGreater)
@@ -1195,7 +1694,7 @@ struct Assimilate
       // MqttSend("/debug/state_settemp", s);
       // Serial.printf("t > c?:%d steps: %d\n",targetIsGreater,steps);
 
-      if (setPower(true))
+      if (setPower(true, reason))
       {
         delay(150);
       }
@@ -1203,27 +1702,32 @@ struct Assimilate
       for (int i = 0; i < steps; i++)
       {
         if (targetIsGreater)
-          sendIR(PLUS);
+          sendIR(PLUS, reason);
         else
-          sendIR(MINUS);
+          sendIR(MINUS, reason);
         delay(150);
       }
+
+       if (off)
+        setPower(true, reason + " -->Turing off AC after set temp.");
+      return;
     }
     if (force)
     {
       for (size_t i = 0; i < 12; i++)
       {
-        sendIR(PLUS);
+        sendIR(PLUS, reason);
         delay(150);
         yield();
       }
       for (uint8_t i = 0; i < 30 - Target; i++)
       {
-        sendIR(MINUS);
+        sendIR(MINUS, reason);
         delay(150);
         yield();
       }
     }
+    Freud.ChangeTempState(Target);
     publishReport();
   }
 
@@ -1253,6 +1757,9 @@ struct Assimilate
   /// @param newValue when was door sensor triggered
   void HandleDoorSensor(uint32_t newValue)
   {
+
+    Freud.DoorAnalysis(newValue);
+
     if (newValue != 0)
     {
       door_time = now();
@@ -1271,6 +1778,8 @@ struct Assimilate
     DocJson["Hsleep"] = hardware_sleep_requested ? hardware_sleep : 0;
     DocJson["Settemp"] = controlingTemperature ? controlTemp : -controlTemp;
     DocJson["Door"] = door_time;
+    DocJson["SleepIn"] = control_variables.sleep_in;
+    DocJson["CurrTemp"] = lastKnowTemp;
 
     // Serialize the JSON object to a string
     String msg;
@@ -1312,8 +1821,21 @@ struct Assimilate
 
   void publishReport()
   {
-    Timers.Last_Skynet_Report = now();
+    OldTimers.Last_Skynet_Report = now();
     MqttSend("/state", Report());
+  }
+
+  String sendDebug()
+  {
+    DocJson.clear();
+    DocJson["TH-Low"] = (float)controlTemp - Configuration.IdleTolerance;
+    DocJson["TH-High"] = (float)controlTemp + Configuration.IdleTolerance;
+    DocJson["TH-Active"] = (float)controlTemp - Configuration.IdleTolerance<lastKnowTemp + lastKnowTemp>(float) controlTemp + Configuration.IdleTolerance;
+    DocJson["TGT"] = controlingTemperature ? controlTemp : -controlTemp;
+    DocJson["T"] = lastKnowTemp;
+    String msg;
+    serializeJson(DocJson, msg);
+    return msg;
   }
 };
 
@@ -1635,7 +2157,7 @@ void handleIRSend()
     {
       code = getIrCode(argValue);
     }
-    sendIR(code);
+    sendIR(code, "Raw code from HTTP server.");
     _WebServer.send(200, "text/plain", "Argument received: " + argValue);
   }
 #ifdef COMPILE_SERIAL
@@ -1705,7 +2227,7 @@ void handleGeneral()
       _WebServer.send(200, "text/plain", response);
       return;
     }
-    bool result = MQTT_Reconnect();
+    bool result = MQTT_Reconnect(LocalMQ, "Local Mqtt [direct Request from Web]");
     if (result)
     {
 #ifdef COMPILE_SERIAL
@@ -1956,7 +2478,7 @@ void handlePrint()
 /// @brief Gets the name of the MQTT state based on its value.
 /// @param value The value of MQTT.state().
 /// @return A String with the MQTT state name.
-String getDefineName(int value)
+String getMQTTStatusStr(int value)
 {
   switch (value)
   {
@@ -2023,6 +2545,17 @@ void HiveMQ_Callback(char *topic, byte *payload, unsigned int length)
   for (uint i = 0; i < length; i++)
     incommingMessage += (char)payload[i];
 
+  // MqttSend("Test/debug", "MQTT::[" + String(topic) + "]-->[" + incommingMessage + "].");
+
+  if (strcmp(topic, String("All/control").c_str()) == 0)
+  {
+    if (incommingMessage == "get_state")
+    {
+      Skynet.publishReport();
+      Configuration.SendToMqtt();
+    }
+  }
+
 #ifdef COMPILE_SERIAL
   Serial.printf("MQTT::[%s]-->[%s]\n", topic, incommingMessage.c_str());
 #endif
@@ -2034,14 +2567,6 @@ void HiveMQ_Callback(char *topic, byte *payload, unsigned int length)
     MqttSend("/console/out", res.result ? res.response : "Command not recognized, try 'help'.");
   }
 
-  if (strcmp(topic, "All/control") == 0)
-  {
-    if (incommingMessage.equals("get_state"))
-    {
-      Skynet.publishReport();
-    }
-  }
-
   if (strcmp(topic, MqttTopic("/Light").c_str()) == 0)
   {
     incommingMessage == "1" ? digitalWrite(2, !HIGH) : digitalWrite(2, !LOW);
@@ -2050,18 +2575,17 @@ void HiveMQ_Callback(char *topic, byte *payload, unsigned int length)
   }
   else if (strcmp(topic, MqttTopic("/Hshutdown").c_str()) == 0)
   {
-    Skynet.Hardware_AC_Sleep(atoi(incommingMessage.c_str()));
+    Skynet.Hardware_AC_Sleep(atoi(incommingMessage.c_str()), "HW Shutdown from MQTT");
     MqttSend("/Response", "ack");
   }
   else if (strcmp(topic, MqttTopic("/Sshutdown").c_str()) == 0)
   {
-    Skynet.software_sleep = now() + atoi(incommingMessage.c_str()) * 60 * 60;
-    Skynet.software_sleep_requested = true;
+    Skynet.Software_AC_sleep(atoi(incommingMessage.c_str()));
     MqttSend("/Response", "ack");
   }
   else if (strcmp(topic, MqttTopic("/Send-IR").c_str()) == 0)
   {
-    sendIR(strtoul(incommingMessage.c_str(), NULL, HEX));
+    sendIR(strtoul(incommingMessage.c_str(), NULL, HEX), "Raw code from MQTT");
   }
 
   else if (Configuration.MainSensor.equals(topic))
@@ -2081,8 +2605,8 @@ void HiveMQ_Callback(char *topic, byte *payload, unsigned int length)
   control_variables.handleSensorAvailable(topic);
 }
 
-/// @brief Handles messages recieved by the tcp server.
-/// @param message the message recieved already as String.
+/// @brief Handles messages received by the tcp server.
+/// @param message the message received already as String.
 /// @param index the index of the client in the array {TcpServer.clients[index]}.
 /// @return the response to the client.
 String HandleTcpMsg(String message, int index)
@@ -2159,16 +2683,23 @@ bool getTime()
 }
 
 // Coments above.
-void sendIR(uint32_t Code)
+void sendIR(uint32_t Code, String reason, bool send_to_skynet)
 {
   SetLed(HIGH);
 #ifdef COMPILE_SERIAL
   Serial.printf("Sending {0x%X} [%s]\n", Code, getIrName(Code).c_str());
 #endif
-  IrSender.sendPulseDistanceWidth(38, 9000, 4550, 600, 1700, 600, 550, Code, 24, PROTOCOL_IS_LSB_FIRST, 0, 0);
-  Skynet.ExpectBehaviour(Code);
+  IrSender.sendPulseDistanceWidth(38, 9000, 4550, 600, 1700, 600, 550, Code, 24, PROTOCOL_IS_LSB_FIRST, 10, 1);
+  if (send_to_skynet)
+    Skynet.ExpectBehaviour(Code);
+
   String payload = "Sent: ";
   payload += getIrName(Code);
+  payload += " reason: '";
+  payload += reason;
+  payload += "' skynet: [";
+  payload += send_to_skynet;
+  payload += "]";
   MqttSend("/IR", payload);
   SetLed(LOW);
   yield();
@@ -2221,51 +2752,9 @@ const char *getWiFiStatusString(wl_status_t status)
 }
 #endif
 
-enum TimeStampFormat
+TempWithTime get_last_twt()
 {
-  DateAndTime,
-  OnlyDate,
-  OnlyTime
-};
-
-/// @brief Converts a timestamp to a date and time String.
-/// @param timestamp The unix timestamp to be parsed.
-/// @param _format Whether you want Date, Time or Both.
-/// @return a String with the date on the timestamp formatted as HH:mm DD/MM/YY, attending to the TimeStampFormat passed.
-String timestampToDateString(uint32_t timestamp, TimeStampFormat _format = DateAndTime)
-{
-  // Convert the timestamp to a time_t object.
-  time_t timeObject = timestamp;
-
-  // Extract the date components from the time_t object.
-  int _year = year(timeObject) % 100;
-  int _month = month(timeObject);
-  int _day = day(timeObject);
-
-  int _hour = hour(timeObject);
-  int _minute = minute(timeObject);
-
-  String dateString = "";
-  // Adds Time
-  if (_format != OnlyDate)
-  {
-    dateString = String(_hour, DEC).length() == 1 ? "0" + String(_hour, DEC) : String(_hour, DEC);
-    dateString += ":";
-    dateString += String(_minute, DEC).length() == 1 ? "0" + String(_minute, DEC) : String(_minute, DEC);
-  }
-  // Adds a Space between Time and Date
-  if (_format == DateAndTime)
-    dateString += " ";
-  // Adds Date
-  if (_format != OnlyTime)
-  {
-    dateString += String(_day, DEC).length() == 1 ? "0" + String(_day, DEC) : String(_day, DEC);
-    dateString += "/";
-    dateString += String(_month, DEC).length() == 1 ? "0" + String(_month, DEC) : String(_month, DEC);
-    dateString += "/";
-    dateString += String(_year, DEC);
-  }
-  return dateString;
+  return tempHandler.currentTemperatureWithTime();
 }
 
 /// @brief Handles and income message.
@@ -2372,14 +2861,14 @@ NightMareMessage handleCommand(const String &message)
       uint32_t _code = strtoul(args[0].c_str(), NULL, HEX);
       if (_code != 0)
       {
-        sendIR(_code);
+        sendIR(_code, "RAW CODE INT: Handle Command");
         response = "Sent: ";
         response += _code;
         response += ".";
       }
       else if (getIrCode(args[0]) > 0)
       {
-        sendIR(getIrCode(args[0]));
+        sendIR(getIrCode(args[0]), "RAW CODE NAME: Handle Command");
         response = "Sent: ";
         response += args[0];
         response += ".";
@@ -2431,7 +2920,7 @@ NightMareMessage handleCommand(const String &message)
       return result;
     }
     if (args[1] == "1")
-      Skynet.Hardware_AC_Sleep(_time);
+      Skynet.Hardware_AC_Sleep(_time, "HW Shutdown from HandleCommand");
     else
     {
       Skynet.software_sleep = now() + _time * 60 * 60;
@@ -2453,10 +2942,19 @@ NightMareMessage handleCommand(const String &message)
   }
   else if (command == "TARGET")
   {
-    Skynet.setTaget(args[0].toDouble());
+    double target = args[0].toDouble();
+    Skynet.setTaget(target, "New Target from Handle Command");
+    if (target > 0)
+      control_variables.baseLineTemp = target;
     response += "Target is now: ";
     response += Skynet.controlingTemperature ? String(Skynet.controlTemp) : "off";
     response += ".";
+  }
+  else if (command == "POWER")
+  {
+    bool power = args[0] == "1";
+    Skynet.setTaget(0, "POWER from Handle Command");
+    Skynet.setPower(power, "POWER from Handle Command");
   }
   else if (command == "WIFI")
   {
@@ -2478,8 +2976,8 @@ NightMareMessage handleCommand(const String &message)
   }
   else if (command == "SETTEMP")
   {
-    Skynet.setPower(args[0].equals("1"));
-    response += "Power is now: " + String(Skynet.powerState);
+    Skynet.SetTemperature(atoi(args[0].c_str()), "SETTEMP from Handle Command");
+    response += "Setting Ac Temperature to: " + String(Skynet.tempState);
     +".";
   }
   else if (command == "INFO")
@@ -2527,6 +3025,7 @@ NightMareMessage handleCommand(const String &message)
   {
     Skynet.HandleDoorSensor(strtoul(args[0].c_str(), NULL, 10));
     Skynet.run(tempHandler.currentTemperatureWithTime());
+    Skynet.publishReport();
   }
   else if (command == "DOORSENSOR")
   {
@@ -2547,6 +3046,34 @@ NightMareMessage handleCommand(const String &message)
     response += res ? "True" : "False";
     response += ".";
   }
+  else if (command == "SLEEP-IN")
+  {
+    control_variables.sleep_in = (args[0] == "1");
+    response = "sleep in mode is now: ";
+    response += control_variables.sleep_in ? "enabled." : "disabled.";
+  }
+  else if (command == "FREUD")
+  {
+    Skynet.Freud.AnalyzeBehaviour(get_last_twt(), true);
+  }
+  else if (command == "VERSION")
+  {
+    response = "VER: ";
+    response += VERSION;
+    response += " BUILD TIME: ";
+    response += BUILD_TIMESTAMP;
+  }
+  else if (command == "DEBUG")
+  {
+    response = Skynet.sendDebug();
+  }
+  else if (command == "SKYNET-PAUSE")
+  {
+    bool enable = args[0] == "1";
+    Skynet.pause = enable;
+    response = "Skynet Pause is now : ";
+    response += enable ? "Enabled." : "Disabled.";
+  }
 
   else
     resolve = false;
@@ -2558,6 +3085,67 @@ NightMareMessage handleCommand(const String &message)
   Serial.printf("message = %s | command = %s | args[0] = %s | args[1] = %s | args[2] = %s |\n", message.c_str(), command.c_str(), args[0].c_str(), args[1].c_str(), args[2].c_str());
 #endif
   return result;
+}
+
+void HandleMultipleMqtt()
+{
+#define DEBUG_MQTT_CONN FALSE
+  static uint32_t local_last_mqtt_attempt = 0;
+  static uint32_t last_mnds_query = 0;
+  bool local_mqtt_connected = LocalMQ.connected();
+  // if local server is connected nothing needs to be done.
+  if (local_mqtt_connected)
+  {
+#ifdef COMPILE_SERIAL &&DEBUG_MQTT_CONN
+    printf("Local already MQTT Connected\n");
+#endif
+    return;
+  }
+
+  // Every 24 hours query the mDNS server for the local mqtt server ip addr.
+  // pubsub lib does not support mDNS hostname so we need to do it manually (why).
+  if (now() - last_mnds_query > 24 * HOUR)
+  {
+    IPAddress server_ip = MDNS.queryHost(LOCAL_MQTT_SERVER_HOSTNAME, 1000);
+    control_variables.localMqttServerIp = server_ip.toString();
+#ifdef COMPILE_SERIAL &&DEBUG_MQTT_CONN
+    printf("Querying mDNS for local server IP. hostname: %s result: %s\n", LOCAL_MQTT_SERVER_HOSTNAME, server_ip.toString().c_str());
+#endif
+  }
+
+  bool hive_mqtt_connected = HiveMQ.connected();
+  bool local_con_res = false;
+  // if hivemq is connected and the last attempt was more than 60 seconds ago, do not try to connect
+  // to the local server again or if not connected to hivemq try to connect to the local server.
+  if ((hive_mqtt_connected && (now() - local_last_mqtt_attempt) > 60) || !hive_mqtt_connected)
+  {
+#ifdef COMPILE_SERIAL &&DEBUG_MQTT_CONN
+    printf("Attempting to Connect to local MQTT, HiveMq is [%d] last attempt was: [%s]\n",
+           hive_mqtt_connected,
+           timestampToDateString(local_last_mqtt_attempt, OnlyTime).c_str());
+#endif
+    local_con_res = MQTT_Reconnect(LocalMQ, formatString("Local MQTT [%d]", hive_mqtt_connected));
+    local_last_mqtt_attempt = now();
+  }
+
+  // if the local server is connected and the hivemq is too, disconnect from hivemq.
+  // and nothing else needs to be done.
+  if (local_con_res)
+  {
+
+    if (hive_mqtt_connected)
+    {
+#ifdef COMPILE_SERIAL &&DEBUG_MQTT_CONN
+      printf("Local MQTT Connected, Disconnecting from HiveMQ\n");
+#endif
+      HiveMQ.disconnect();
+    }
+    return;
+  }
+  // finally if we got here, the local server is not connected and we can try to connect to hivemq.
+  // if we are not already connected.
+  if (!hive_mqtt_connected)
+    bool hivemq_con_res = MQTT_Reconnect(HiveMQ, "Hive MQTT");
 }
 
 void setup()
@@ -2587,7 +3175,6 @@ void setup()
   tempSensor.setResolution(sensorAddress, 11);
   // IR Start.
   IrSender.begin();
-
 #ifdef COMPILE_SERIAL
 // Start Serial.
 #ifdef ESP8266
@@ -2733,9 +3320,15 @@ void setup()
   ArduinoOTA.begin();
 #endif
   // Hive MQTT Config.
-  hive_client.setInsecure();
+  hive_client.setCACert(root_ca);
+  hive_client.setCertificate(root_ca);
   HiveMQ.setServer(MQTT_URL, MQTT_PORT);
   HiveMQ.setCallback(HiveMQ_Callback);
+  // Local MQTT Config.
+  IPAddress server_ip = MDNS.queryHost(LOCAL_MQTT_SERVER_HOSTNAME, 1000);
+  control_variables.localMqttServerIp = server_ip.toString();
+  LocalMQ.setServer(control_variables.localMqttServerIp.c_str(), LOCAL_MQTT_PORT);
+  LocalMQ.setCallback(HiveMQ_Callback);
 
   control_variables.time_synced = getTime();
   control_variables.boot_time = now();
@@ -2743,7 +3336,6 @@ void setup()
   control_variables.LittleFS_Mounted = LittleFS.begin(true);
   // Load configuration.
   bool loadResult = Configuration.LoadFromFile();
-
 #ifdef COMPILE_SERIAL
   Serial.printf("Configuration was: %s\n", loadResult ? " loaded. " : " NOT LOADED!.");
 #ifdef PRINT_FIRMWARE
@@ -2811,7 +3403,7 @@ void setup()
 #endif
 
   // Web Server config.
-
+  // Maybe Delete this.
   setServerFiles("/web/");
   _WebServer.on("/settings", handleConfig);
   _WebServer.on("/send-ir", handleIRSend);
@@ -2830,6 +3422,7 @@ void setup()
 #ifdef COMPILE_SERIAL
   Serial.println("Tcp server started");
 #endif
+  Timers.create("MqttControl", 1, HandleMultipleMqtt);
   // Start AC control.
   Skynet.StartControl();
   SetLed(LOW);
@@ -2866,11 +3459,13 @@ void loop()
   ArduinoOTA.handle();
 #endif
   HiveMQ.loop();
+  LocalMQ.loop();
   TcpServer.handleServer();
+  Timers.run();
 #ifdef LDR_PIN
-  if (millis() - Timers.LDR > 200)
+  if (millis() - OldTimers.LDR > 200)
   {
-    Timers.LDR = millis();
+    OldTimers.LDR = millis();
 #define NUM_OF_ANALOG_READS 3
     int _ldrVal = 0;
     for (size_t i = 0; i < NUM_OF_ANALOG_READS; i++)
@@ -2921,9 +3516,9 @@ void loop()
   }
 #endif
   // Gets the onboard temperature.
-  if (now() - Timers.temperature > 2)
+  if (now() - OldTimers.temperature > 2)
   {
-    Timers.temperature = now();
+    OldTimers.temperature = now();
     // tempSensor.requestTemperatures();
     // Serial.println(tempSensor.getTempCByIndex(0));
     // Serial.println(analogRead(LDR_PIN));
@@ -2931,7 +3526,6 @@ void loop()
     {
       tempSensor.requestTemperatures();
       tempHandler.add(tempSensor.getTempCByIndex(0));
-      Serial.println(tempSensor.getTempCByIndex(0));
     }
     else if (Configuration.DefaultBacktoBoard)
     {
@@ -2940,21 +3534,21 @@ void loop()
     }
   }
   // Runs Skynet AC control.
-  if (now() - Timers.Skynet > 2)
+  if (now() - OldTimers.Skynet > 2)
   {
-    Timers.Skynet = now();
+    OldTimers.Skynet = now();
     Skynet.run(tempHandler.currentTemperatureWithTime());
   }
   // Try to sync time if its not synced yet.
-  if (now() - Timers.sync_time > 300 && !control_variables.time_synced)
+  if (now() - OldTimers.sync_time > 300 && !control_variables.time_synced)
   {
-    Timers.sync_time = now();
+    OldTimers.sync_time = now();
     control_variables.time_synced = getTime();
   }
   // Publishes
-  if (now() - Timers.mqtt_publish > 2)
+  if (now() - OldTimers.mqtt_publish > 30)
   {
-    Timers.mqtt_publish = now();
+    OldTimers.mqtt_publish = now();
 #ifdef USE_LDR
     int _ldrVal = 0;
     for (size_t i = 0; i < NUM_OF_ANALOG_READS; i++)
@@ -2966,47 +3560,20 @@ void loop()
 #endif
     MqttSend("/sensors/Temperature", String(tempHandler.currentTemperature()));
   }
-  // Try to reconnect to MQTT broker if it is not connected.
-  if (now() - Timers.mqtt_reconnect > 10 && !HiveMQ.connected())
-  {
-    Timers.mqtt_reconnect = now();
-    MQTT_Reconnect();
-  }
-  // Runs the Skynet for AC Control
-  if (Configuration.CompareTime())
-  {
-    if (!control_variables.ac_shutdown_sent)
-    {
-      if (Configuration.TemperatureThreshold)
-      {
-        if (tempHandler.currentTemperature() <= Configuration.TemperatureThreshold - IDLE_TOLERANCE)
-        {
-          // turn off the ac and stops the temperature control
-          Skynet.setPower(false);
-          Skynet.setTaget(0);
-          control_variables.ac_shutdown_sent = true;
-        }
-      }
-      else
-      {
-        // turn off the ac and stops the temperature control
-        Skynet.setPower(false);
-        Skynet.setTaget(0);
-        control_variables.ac_shutdown_sent = true;
-      }
-    }
-  }
-  else
-  {
-    control_variables.ac_shutdown_sent = false;
-  }
+  // // Try to reconnect to MQTT broker if it is not connected.
+  // if (now() - OldTimers.mqtt_reconnect > 10 && !HiveMQ.connected())
+  // {
+  //   OldTimers.mqtt_reconnect = now();
+  //   MQTT_Reconnect();
+  // }
+
   // Handle software shutdown
   if (now() >= Skynet.software_sleep && Skynet.software_sleep_requested)
   {
-    Skynet.setPower(false);
+    Skynet.setPower(false, "SW SLEEP Triggered from Loop ???????");
     Skynet.software_sleep_requested = false;
   }
-  if (now() - Timers.Last_Skynet_Report > 10)
+  if (now() - OldTimers.Last_Skynet_Report > 10)
   {
     Skynet.publishReport();
   }

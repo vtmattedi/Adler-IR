@@ -10,7 +10,7 @@ String NightMareTCPClient::NightMareCommands_Client(String msg)
     if (msg == "Help" || msg == "help" || msg == "H" || msg == "h")
     {
         response += ("Welcome to NightMare Home Systems ©\nThis is a ESP32 Module and it can answer to the following commands:\n");
-        response += ("Quick obs.: the character int [19] or char () is ignored when recieved for facilitating reasons.");
+        response += ("Quick obs.: the character int [19] or char () is ignored when received for facilitating reasons.");
         response += ("'A' > Gets the current state of available variables\n'L' > Toggles the LIGH_RELAY state\n");
         response += ("'T;******;' > Sets the TIMEOUT value for the tcp server.[Replace '******' with a long.\n");
         response += ("'SOFTWARE_RESET' requests a software reset.");

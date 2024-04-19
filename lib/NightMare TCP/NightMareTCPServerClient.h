@@ -29,7 +29,7 @@ public:
   WiFiClient *client;
   // Last Time the client sent anything
   uint32_t clientsTimeout;
-  // Client Status {If a message Z;* is Recieved then it is stored here}
+  // Client Status {If a message Z;* is received then it is stored here}
   String clientsStatus;
   // Client ID
   String clientsID;

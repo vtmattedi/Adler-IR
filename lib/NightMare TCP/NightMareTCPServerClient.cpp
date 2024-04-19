@@ -6,7 +6,7 @@ NightMareTCPServerClient::NightMareTCPServerClient()
   WiFiClient *client = NULL;
   // Last Time the client sent anything
   int clientsTimeout = 0;
-  // Client Status {If a message Z;* is Recieved then it is stored here}
+  // Client Status {If a message Z;* is received then it is stored here}
   String clientsStatus = "";
   // Client ID
   String clientsID = "";
