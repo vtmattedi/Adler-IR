@@ -1,0 +1,32 @@
+#pragma once
+#include <Wire.h>
+#include <Arduino.h>
+#include <Adafruit_ADS1X15.h>
+#include <NightMareNetwork.h>
+
+#define EA_MUX 0
+#define EA_VBAT 1
+#define EA_MOIST0 2
+#define EA_MOIST1 3
+#define EA_ADDR 0x48
+
+
+
+class ExternalAdc
+{
+private:
+    // Make sure it is not acessed when not enabled.
+    // I2C lib goes to infinite loop if not connected
+    Adafruit_ADS1115 EA;
+    bool _oldAvailable = false;
+
+public:
+    bool available = false;
+    void setup();
+    void loop();
+    String i2cScan();
+ 
+};
+
+
+extern ExternalAdc ExtAdc;

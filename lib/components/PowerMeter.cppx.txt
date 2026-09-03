@@ -1,0 +1,313 @@
+#include "PowerMeter.h"
+
+#include <ArduinoJson.h>
+
+#define POLL_INTERVAL_MS 1000
+#define MIN_POLL_INTERVAL_MS 250
+
+PowerMeter gPowerMeter;
+
+PowerMeter::PowerMeter()
+	: _serial(nullptr),
+	  _pzem(nullptr),
+	  _mutex(nullptr),
+	  _pollTask(nullptr),
+	  _pollIntervalMs(POLL_INTERVAL_MS),
+	  _voltage(NAN),
+	  _current(NAN),
+	  _power(NAN),
+	  _energy(NAN),
+	  _frequency(NAN),
+	  _powerFactor(NAN),
+	  _lastReadMs(0),
+	  _hasValidReading(false),
+	  _isRunning(false)
+{
+}
+
+PowerMeter::~PowerMeter()
+{
+	end();
+}
+
+bool PowerMeter::begin(HardwareSerial &serial, uint8_t rxPin, uint8_t txPin, uint32_t pollIntervalMs)
+{
+	end();
+	Serial.printf("Starting Power Meter...: RX: %d, TX: %d\n", rxPin, txPin);
+	_serial = &serial;
+	_pollIntervalMs = (pollIntervalMs == 0) ? MIN_POLL_INTERVAL_MS : pollIntervalMs;
+	_mutex = xSemaphoreCreateMutex();
+
+	if (_mutex == nullptr)
+	{
+		Serial.printf("Failed to create mutex for PowerMeter.\n");
+		return false;
+	}
+
+	_serial->begin(9600, SERIAL_8N1, rxPin, txPin);
+	_pzem = new PZEM004Tv30(*_serial, rxPin, txPin);
+
+	if (_pzem == nullptr)
+	{
+		vSemaphoreDelete(_mutex);
+		_mutex = nullptr;
+		Serial.printf("Failed to initialize PZEM-004T-v3.0.\n");
+		return false;
+	}
+
+	_isRunning = true;
+
+	BaseType_t created = xTaskCreatePinnedToCore(
+		PowerMeter::pollTaskEntry,
+		"PowerMeterPoll",
+		4096,
+		this,
+		1,
+		&_pollTask,
+		tskNO_AFFINITY);
+
+	if (created != pdPASS)
+	{
+		_isRunning = false;
+		delete _pzem;
+		_pzem = nullptr;
+		vSemaphoreDelete(_mutex);
+		_mutex = nullptr;
+		Serial.printf("Failed to create polling task for PowerMeter.\n");
+		return false;
+	}
+
+	readNow();
+	return true;
+}
+
+void PowerMeter::end()
+{
+	_isRunning = false;
+
+	if (_pollTask != nullptr)
+	{
+		vTaskDelete(_pollTask);
+		_pollTask = nullptr;
+	}
+
+	if (_pzem != nullptr)
+	{
+		delete _pzem;
+		_pzem = nullptr;
+	}
+
+	if (_mutex != nullptr)
+	{
+		vSemaphoreDelete(_mutex);
+		_mutex = nullptr;
+	}
+
+	_serial = nullptr;
+	_hasValidReading = false;
+}
+
+void PowerMeter::pollTaskEntry(void *param)
+{
+	PowerMeter *self = static_cast<PowerMeter *>(param);
+	if (self != nullptr)
+	{
+		self->pollLoop();
+	}
+	vTaskDelete(nullptr);
+}
+
+void PowerMeter::pollLoop()
+{
+	while (_isRunning)
+	{
+		bool res = readNow();
+		Serial.printf("Reading Power Meter Data = %s\n", res ? "Success" : "Failed");
+		vTaskDelay(pdMS_TO_TICKS(_pollIntervalMs));
+	}
+}
+
+bool PowerMeter::readNow()
+{
+	if (_pzem == nullptr)
+	{
+		Serial.printf("PZEM-004T-v3.0 not initialized.\n");
+		return false;
+	}
+
+	float voltage = _pzem->voltage();
+	float current = _pzem->current();
+	float power = _pzem->power();
+	float energy = _pzem->energy();
+	float frequency = _pzem->frequency();
+	float powerFactor = _pzem->pf();
+
+	bool hasAnyValue = false;
+
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		if (!isnan(voltage))
+		{
+			_voltage = voltage;
+			hasAnyValue = true;
+		}
+		if (!isnan(current))
+		{
+			_current = current;
+			hasAnyValue = true;
+		}
+		if (!isnan(power))
+		{
+			_power = power;
+			hasAnyValue = true;
+		}
+		if (!isnan(energy))
+		{
+			_energy = energy;
+			hasAnyValue = true;
+		}
+		if (!isnan(frequency))
+		{
+			_frequency = frequency;
+			hasAnyValue = true;
+		}
+		if (!isnan(powerFactor))
+		{
+			_powerFactor = powerFactor;
+			hasAnyValue = true;
+		}
+
+		_hasValidReading = hasAnyValue;
+		if (hasAnyValue)
+		{
+			_lastReadMs = millis();
+		}
+		xSemaphoreGive(_mutex);
+	}
+
+	return hasAnyValue;
+}
+
+void PowerMeter::setPollInterval(uint32_t pollIntervalMs)
+{
+	_pollIntervalMs = (pollIntervalMs == 0) ? MIN_POLL_INTERVAL_MS : pollIntervalMs;
+}
+
+bool PowerMeter::hasValidReading() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		bool valid = _hasValidReading;
+		xSemaphoreGive(_mutex);
+		return valid;
+	}
+	return false;
+}
+
+unsigned long PowerMeter::getLastReadMs() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		unsigned long value = _lastReadMs;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return 0;
+}
+
+float PowerMeter::getVoltage() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _voltage;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+float PowerMeter::getCurrent() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _current;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+float PowerMeter::getPower() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _power;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+float PowerMeter::getEnergy() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _energy;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+float PowerMeter::getFrequency() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _frequency;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+float PowerMeter::getPowerFactor() const
+{
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		float value = _powerFactor;
+		xSemaphoreGive(_mutex);
+		return value;
+	}
+	return NAN;
+}
+
+String PowerMeter::getDataJson() const
+{
+	DynamicJsonDocument doc(256);
+
+	if (_mutex != nullptr && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+	{
+		doc["voltage"] = _voltage;
+		doc["current"] = _current;
+		doc["power"] = _power;
+		doc["energy"] = _energy;
+		doc["frequency"] = _frequency;
+		doc["powerFactor"] = _powerFactor;
+		doc["lastReadMs"] = _lastReadMs;
+		doc["valid"] = _hasValidReading;
+		xSemaphoreGive(_mutex);
+	}
+	else
+	{
+		doc["valid"] = false;
+	}
+
+	String json;
+	serializeJson(doc, json);
+	return json;
+}
+
+void startPowerMeter()
+{
+	gPowerMeter.begin(Serial2, PZEM_RX_PIN, PZEM_TX_PIN, POLL_INTERVAL_MS);
+}

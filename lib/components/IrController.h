@@ -2,12 +2,16 @@
 #include <Arduino.h>
 #include <NightMareNetwork.h>
 
-
 #define MIN_AC_TEMP 18
 #define MAX_AC_TEMP 30
 #define IR_ASYNC_QUEUE_SIZE 10
 #define IR_SEND_INTERVAL_MS 100
-#define IR_PIN 19
+#define IR_RECEIVE_PIN 23
+#define IR_RECEIVE_TASK_STACK_SIZE 4096
+#define IR_RECEIVE_TASK_PRIORITY 1
+
+constexpr uint8_t IR_SEND_PIN = 3;
+
 /// @brief The IR commands of MY AC unit.
 enum IrCodes
 {
@@ -36,24 +40,35 @@ enum IrModes
 /// @return A String with the name of the code.
 String getIrName(uint32_t IrCode);
 
-class IrState
+struct IrState
 {
-public:
     bool power;
     uint8_t temp;
-    IrModes mode; 
-    uint8_t fan;// 0 for low, 1 for high
-    bool turbo; // turbo mode -> min temp and max fan speed and cool mode
-    bool led; 
+    IrModes mode;
+    uint8_t fan; // 0 for low, 1 for high
+    bool turbo;  // turbo mode -> min temp and max fan speed and cool mode
+    bool led;
+};
+
+class IrStateController
+{
+private:
+    void *_onStateChange = nullptr;
+
+public:
+    IrState state;
     /// @brief Default constructor for IrState.
     /// Initializes all IR controller state members to their default values.
-    IrState();
+    IrStateController();
     void setPower(bool state);
     void setTemp(uint8_t temp);
     void setMode(IrModes mode);
     void nextState(IrCodes code);
+    void printState();
+    void onStateChange();
+    String toJson();
 };
-extern IrState currentIrState;
+extern IrStateController irController;
 
 void enableIrDebug(bool enable);
 bool getIrDebug();

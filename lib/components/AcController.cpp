@@ -46,13 +46,13 @@ void AcController::setDoorSecondsToStop(unsigned long secs)
 void AcController::captureState()
 {
     pauseState.targetTemp = targetTemp;
-    pauseState.power = currentIrState.power;
+    pauseState.power = irController.state.power;
 }
 
 void AcController::restoreState()
 {
     targetTemp = pauseState.targetTemp;
-    currentIrState.setPower(pauseState.power);
+    irController.setPower(pauseState.power);
 }
 
 void AcController::setDoorOpen(bool open)
@@ -76,11 +76,11 @@ void AcController::temperatureControlLoop()
     double delta = currentTemp - targetTemp;
     if (delta > hysteresis)
     {
-        currentIrState.setPower(true); // Too hot, need to turn on cooling
+        irController.setPower(true); // Too hot, need to turn on cooling
     }
     else if (delta < -hysteresis)
     {
-        currentIrState.setPower(false); // Too cold, turn off cooling
+        irController.setPower(false); // Too cold, turn off cooling
     }
 }
 
@@ -90,13 +90,13 @@ bool AcController::doorsControlLoop()
     {
         if (now() - doorOpenTimestamp > doorSecsToPause) // if the door has been open for more than the configured time
         {
-            currentIrState.setPower(false); // turn off the AC to save energy
+            irController.setPower(false); // turn off the AC to save energy
             return false;                   // skip the rest of the control loop while the door is open
         }
         if (now() - doorOpenTimestamp > doorSecsToStop) // if the door has been open for more than the configured time
         {
             targetTemp = -1;                // disable AC control to prevent it from turning back on until the door is closed and state is restored
-            currentIrState.setPower(false); // turn off the AC to save energy
+            irController.setPower(false); // turn off the AC to save energy
             this->setDoorOpen(false);       // After we stop the AC due to the door being open for too long, we can consider user has left the room and we can reset the door state to closed to allow the AC to turn back on when the door is opened again.
             return false;                   // skip the rest of the control loop while the door is open
         }
@@ -123,13 +123,20 @@ void AcController::autoTurnOff()
 
     if (this->sleepIn ? currTime == this->sleepInturnOffTime : currTime == this->turnOffTime)
     {
-        currentIrState.setPower(false);
+        irController.setPower(false);
         if (targetTemp > 0)
         {
             this->toggleTarget();
         }
         this->sleepIn = false;
     }
+}
+
+void AcController::enableDoorControl(bool enable)
+{
+    doorControlEnabled = enable;
+    Config.setFlag("ac_door_control", enable);
+    Config.save();
 }
 
 void AcController::init()

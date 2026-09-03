@@ -1,0 +1,94 @@
+#include "ExternalAdc.h"
+
+ExternalAdc ExtAdc;
+
+String get_EA_pin_name(uint8_t pin)
+{
+    switch (pin)
+    {
+    case EA_MUX:
+        return "  MUX ";
+    case EA_VBAT:
+        return " VBAT ";
+    case EA_MOIST0:
+        return "MOIST0";
+    case EA_MOIST1:
+        return "MOIST1";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void ExternalAdc::setup()
+{
+    Wire.begin(25, 26);
+    available = EA.begin(0x48);
+    EA.setGain(GAIN_ONE);
+    if (!available)
+    {
+        Serial.println("ADS1115 not found");
+        return;
+    }
+    EA.setGain(GAIN_ONE);
+    EA.setDataRate(RATE_ADS1115_860SPS);
+    Serial.println("ADS1115 Started");
+}
+String ExternalAdc::i2cScan()
+{
+    byte error, address;
+    int deviceCount = 0;
+    String result = "";
+
+    Serial.println("Scanning I2C bus...");
+
+    for (address = 1; address < 127; address++)
+    {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+
+        if (error == 0)
+        {
+            result += "Device found at address 0x";
+            if (address < 16)
+            {
+                result += "0";
+            }
+            result += String(address, HEX);
+            result += "\n";
+            deviceCount++;
+        }
+    }
+
+    if (deviceCount == 0)
+    {
+        result = "No devices found.";
+    }
+
+    return result;
+}
+void ExternalAdc::loop()
+{
+    if (available)
+    {
+        for (uint8_t pin = 0; pin < 4; pin++)
+        {
+            if (pin == 1 || pin == 2) // Skip VBAT and MOIST0 for faster readings, as they are not needed for every loop
+                continue;
+            int c = 0;
+            int t_start = millis();
+            int raws[1000];
+            while (millis() - t_start < 17 /* 1 second */)
+            {
+                raws[c % 1000] = EA.readADC_SingleEnded(pin);
+                c++;
+            }
+            raws[c % 1000] = -1; // Mark end of valid samples
+            for (int i = 0; i < min(c, 1000); i++)
+            {
+                if (raws[i] == -1)
+                    break;
+                Serial.printf("%s: %d (%.2f V)\n", get_EA_pin_name(pin).c_str(), raws[i], EA.computeVolts(raws[i]));
+            }
+        }
+    }
+}

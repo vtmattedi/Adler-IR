@@ -31,84 +31,84 @@ String getIrName(uint32_t IrCode)
     }
 }
 
-IrState::IrState()
+IrStateController::IrStateController()
 {
-    power = false;
-    temp = MIN_AC_TEMP;
-    mode = IrModes::MODE_COOL;
-    fan = 0;
-    led = false;
-    turbo = false;
+    state.power = false;
+    state.temp = MIN_AC_TEMP;
+    state.mode = IrModes::MODE_COOL;
+    state.fan = 0;
+    state.led = false;
+    state.turbo = false;
 }
 
-void IrState::nextState(IrCodes code)
+void IrStateController::nextState(IrCodes code)
 {
     if (code == POWER)
     {
-        power = !power;
-        mode = IrModes::MODE_COOL; // reset to cool mode when toggling power
+        state.power = !state.power;
+        state.mode = IrModes::MODE_COOL; // reset to cool mode when toggling power
         return;
     }
-    if (!power)
+    if (!state.power)
     {
         // If the AC is off, only the POWER command should have an effect
         return;
     }
     // if we are on turbo mode, +,- should not have an effect on the temp
-    if (code == PLUS && !turbo)
+    if (code == PLUS && !state.turbo)
     {
-        if (temp < MAX_AC_TEMP)
-            temp++;
+        if (state.temp < MAX_AC_TEMP)
+            state.temp++;
     }
-    else if (code == MINUS && !turbo)
+    else if (code == MINUS && !state.turbo)
     {
-        if (temp > MIN_AC_TEMP)
-            temp--;
+        if (state.temp > MIN_AC_TEMP)
+            state.temp--;
     }
     else if (code == LED)
     {
-        led = !led;
+        state.led = !state.led;
     }
     else if (code == TURBO)
     {
-        turbo = !turbo;
-        mode = IrModes::MODE_COOL; // when turbo is turned on, the mode should be set to cool
+        state.turbo = !state.turbo;
+        state.mode = IrModes::MODE_COOL; // when turbo is turned on, the mode should be set to cool
     }
     else if (code == MODE)
     {
-        if (turbo)
+        if (state.turbo)
         {
-            turbo = false;
+            state.turbo = false;
         }
         else
         {
-            mode = static_cast<IrModes>((mode + 1) % 3);
+            state.mode = static_cast<IrModes>((state.mode + 1) % 3);
         }
     }
 }
 
-void IrState::setPower(bool state)
+void IrStateController::setPower(bool powerState)
 {
-    if (power != state)
+    if (state.power != powerState)
     {
-        power = state;
+        state.power = powerState;
         sendIRCode(POWER); // toggle power state
     }
 }
 
-void IrState::setTemp(uint8_t temp)
+void IrStateController::setTemp(uint8_t temp)
 {
     if (temp < MIN_AC_TEMP || temp > MAX_AC_TEMP)
         return; // Invalid temperature, ignore the command
-    bool wasOn = power;
+    bool wasOn = state.power;
     if (!wasOn)
     {
         sendIRCode(POWER); // turn on the AC if it was off
         delay(200);
     }
-    while (this->temp != temp)
+    while (this->state.temp != temp)
     {
-        if (this->temp < temp)
+        if (this->state.temp < temp)
         {
             sendIRCode(PLUS);
         }
@@ -124,9 +124,9 @@ void IrState::setTemp(uint8_t temp)
     }
 }
 
-void IrState::setMode(IrModes mode)
+void IrStateController::setMode(IrModes mode)
 {
-    if (this->mode != mode && power)
+    if (this->state.mode != mode && state.power)
     {
         if (mode == IrModes::MODE_COOL)
         {
@@ -134,7 +134,7 @@ void IrState::setMode(IrModes mode)
         }
         else if (mode == IrModes::MODE_VENTILATOR)
         {
-            if (this->mode == IrModes::MODE_COOL)
+            if (this->state.mode == IrModes::MODE_COOL)
             {
                 sendIRCode(MODE); // cool -> ventilator
             }
@@ -146,7 +146,7 @@ void IrState::setMode(IrModes mode)
         }
         else if (mode == IrModes::MODE_HUMIDIFIER)
         {
-            if (this->mode == IrModes::MODE_COOL)
+            if (this->state.mode == IrModes::MODE_COOL)
             {
                 sendIRCode(MODE); // cool -> humidifier
                 sendIRCode(MODE);
@@ -160,11 +160,23 @@ void IrState::setMode(IrModes mode)
     }
 }
 
+void IrStateController::printState()
+{
+    Serial.println("Current IR State:");
+    Serial.println("Power: " + String(state.power ? "ON" : "OFF"));
+    Serial.println("Temperature: " + String(state.temp) + "°C");
+    Serial.println("Mode: " + String(state.mode == MODE_COOL ? "COOL" : state.mode == MODE_VENTILATOR ? "VENTILATOR"
+                                                                                                      : "HUMIDIFIER"));
+    Serial.println("Fan: " + String(state.fan == 0 ? "LOW" : "HIGH"));
+    Serial.println("Turbo: " + String(state.turbo ? "ON" : "OFF"));
+    Serial.println("LED: " + String(state.led ? "ON" : "OFF"));
+}
+
 void forceAcToTemp(uint8_t temp, bool turnOn = false)
 {
     if (turnOn)
     {
-        currentIrState.setPower(true);
+        irController.setPower(true);
         delay(150); // Small delay to ensure the AC unit has time to process the command
     }
     // ensures it is at Max temp.
@@ -181,16 +193,31 @@ void forceAcToTemp(uint8_t temp, bool turnOn = false)
     }
     if (turnOn)
     {
-        currentIrState.setPower(false);
+        irController.setPower(false);
     }
 }
 
-IrState currentIrState;
+String IrStateController::toJson()
+{
+    DynamicJsonDocument doc(256);
+    doc["power"] = state.power;
+    doc["temp"] = state.temp;
+    doc["mode"] = state.mode;
+    doc["fan"] = state.fan;
+    doc["turbo"] = state.turbo;
+    doc["led"] = state.led;
+    String json;
+    serializeJson(doc, json);
+    return json;
+}
+
+IrStateController irController;
 bool irDebugEnabled = false;
 
 void enableIrDebug(bool enable)
 {
     irDebugEnabled = enable;
+    Config.setFlag("ir_debug", enable);
 }
 
 bool getIrDebug()
@@ -217,6 +244,7 @@ bool sendIRCode(uint32_t code)
     }
     _irQueue[_irQueueWrite] = code;
     _irQueueWrite = (_irQueueWrite + 1) % IR_ASYNC_QUEUE_SIZE;
+    irController.nextState(static_cast<IrCodes>(code));
     interrupts();
 
     // Here you would add the actual code to send the IR signal using your IR transmitter hardware.
@@ -246,20 +274,62 @@ void handleIrAsync()
     }
 
     // Send the IR code using your IR transmitter hardware here.
-    if (irDebugEnabled)
+    if (true)
     {
         Serial.println("Sending IR code: " + getIrName(codeToSend));
     }
 
     lastIrSendTime = millis(); // Update the last send time
-    IrSender.sendPulseDistanceWidth(38, 9000, 4550, 600, 1700, 600, 550, codeToSend, 24, PROTOCOL_IS_LSB_FIRST, 10, 1);
-    currentIrState.nextState(static_cast<IrCodes>(codeToSend));
+    IrSender.sendPulseDistanceWidth(38, 9000, 4550, 600, 1700, 600, 550, codeToSend, 24, PROTOCOL_IS_LSB_FIRST, 100, 1);
+
+    irController.nextState(static_cast<IrCodes>(codeToSend));
+}
+
+void IRReceiveHandler(void *pvParameters)
+{
+    IrReceiver.begin(IR_RECEIVE_PIN);
+    unsigned long lastReceiveTime = 0;
+    uint32_t lastReceivedCode = 0;
+    for (;;)
+    {
+        if (IrReceiver.decode())
+        {   
+            if (IrReceiver.decodedIRData.protocol == PULSE_DISTANCE && !((IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) != 0))
+            {
+                uint32_t receivedCode = IrReceiver.decodedIRData.decodedRawData;
+                if (receivedCode == lastReceivedCode && millis() - lastReceiveTime < 200)
+                    ;
+                else
+                {
+                    if (irDebugEnabled)
+                    {
+                        Serial.printf("[%lu][%d] Raw data: %lX\n", millis() - lastReceiveTime, receivedCode == lastReceivedCode, receivedCode);
+                        Serial.println("Received IR code: " + getIrName(receivedCode));
+                        Send_to_MQTT("ir/received", getIrName(receivedCode));
+                    }
+                    // Serial.printf("%s\n", getIrName(receivedCode).c_str());
+                    // Serial.printf("%s\n", irController.toJson().c_str());
+                    irController.nextState(static_cast<IrCodes>(receivedCode));
+                    // Serial.println(irController.toJson());
+                    // IrReceiver.printIRResultShort(&Serial);
+                    lastReceivedCode = receivedCode;
+                    lastReceiveTime = millis();
+                }
+            }
+            IrReceiver.resume(); // Prepare for the next IR code
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS); // Small delay to prevent task watchdog timer from triggering
+    }
 }
 
 void startIrServices()
 {
-    pinMode(IR_PIN, OUTPUT);
-    IrSender.begin(IR_PIN);
+    pinMode(IR_SEND_PIN, OUTPUT);
+    pinMode(IR_RECEIVE_PIN, INPUT_PULLUP);
+    enableIrDebug(Config.getFlag("ir_debug"));
+    IrSender.begin(IR_SEND_PIN);
     // runs the handleIrAsync function every 5 ms.
     Timers.create("IR Async Handler", 5, handleIrAsync, true);
+    BaseType_t res = xTaskCreatePinnedToCore(IRReceiveHandler, "IR Receive Handler", IR_RECEIVE_TASK_STACK_SIZE, NULL, IR_RECEIVE_TASK_PRIORITY, NULL, 0);
+    Serial.printf("%s IR Receive Handler task created\n", OK_LOG(res == pdPASS));
 }

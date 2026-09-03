@@ -1,0 +1,69 @@
+#pragma once
+
+#include <Arduino.h>
+#include <PZEM004Tv30.h>
+
+class PowerMeter
+{
+private:
+	HardwareSerial *_serial;
+	PZEM004Tv30 *_pzem;
+	SemaphoreHandle_t _mutex;
+	TaskHandle_t _pollTask;
+	uint32_t _pollIntervalMs;
+
+	float _voltage;
+	float _current;
+	float _power;
+	float _energy;
+	float _frequency;
+	float _powerFactor;
+	unsigned long _lastReadMs;
+	bool _hasValidReading;
+	bool _isRunning;
+
+	static void pollTaskEntry(void *param);
+	void pollLoop();
+
+public:
+	PowerMeter();
+	~PowerMeter();
+
+	/// @brief Initializes PZEM-004T-v3.0 and starts a background polling task.
+	/// @param serial Hardware serial instance connected to PZEM.
+	/// @param rxPin ESP32 RX pin connected to PZEM TX.
+	/// @param txPin ESP32 TX pin connected to PZEM RX.
+	/// @param pollIntervalMs Poll interval in milliseconds.
+	/// @return True if initialized successfully.
+	bool begin(HardwareSerial &serial, uint8_t rxPin, uint8_t txPin, uint32_t pollIntervalMs = 1000);
+
+	/// @brief Stops polling and releases resources.
+	void end();
+
+	/// @brief Forces an immediate read from PZEM.
+	/// @return True when at least one value was read successfully.
+	bool readNow();
+
+	/// @brief Updates the polling interval used by the background task.
+	void setPollInterval(uint32_t pollIntervalMs);
+
+	bool hasValidReading() const;
+	unsigned long getLastReadMs() const;
+
+	float getVoltage() const;
+	float getCurrent() const;
+	float getPower() const;
+	float getEnergy() const;
+	float getFrequency() const;
+	float getPowerFactor() const;
+
+	/// @brief Returns a JSON snapshot of all currently cached values.
+	String getDataJson() const;
+};
+
+extern PowerMeter gPowerMeter;
+
+
+#define PZEM_RX_PIN 23  // ESP32 RX pin connected to PZEM TX.
+#define PZEM_TX_PIN 22  // ESP32 TX pin connected to PZEM RX.
+void  startPowerMeter();
