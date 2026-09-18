@@ -10,6 +10,7 @@
 #define IR_RECEIVE_TASK_STACK_SIZE 4096
 #define IR_RECEIVE_TASK_PRIORITY 1
 
+
 constexpr uint8_t IR_SEND_PIN = 3;
 
 /// @brief The IR commands of MY AC unit.
@@ -28,12 +29,34 @@ enum IrCodes
     SLEEP3 = 0x40400
 };
 
+/// @brief The modes of MY AC unit.
 enum IrModes
 {
     MODE_COOL = 0,
     MODE_VENTILATOR = 1,
     MODE_HUMIDIFIER = 2,
 };
+
+
+struct IrCommand{
+     IrCodes code;
+     String name;
+};
+
+const IrCommand irCommands[] = {
+    {POWER, "POWER"},
+    {PLUS, "PLUS"},
+    {MINUS, "MINUS"},
+    {COUNT_DOWN, "COUNT_DOWN"},
+    {LED, "LED"},
+    {TURBO, "TURBO"},
+    {MODE, "MODE"},
+    {VENTILATOR, "VENTILATOR"},
+    {SLEEP1, "SLEEP1"},
+    {SLEEP2, "SLEEP2"},
+    {SLEEP3, "SLEEP3"}
+};
+
 
 /// @brief Gets the IR command from the code value.
 /// @param IrCode The code.
@@ -74,3 +97,8 @@ void enableIrDebug(bool enable);
 bool getIrDebug();
 bool sendIRCode(uint32_t code);
 void startIrServices();
+
+IrCommand findIrCommandByName(const String &name);
+IrCommand findIrCommandByCode(uint32_t code);
+bool sendIrCommand(const IrCommand &cmd);
+String getAvailableIRCommands();

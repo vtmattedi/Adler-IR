@@ -277,6 +277,7 @@ void handleIrAsync()
     if (true)
     {
         Serial.println("Sending IR code: " + getIrName(codeToSend));
+        Send_to_MQTT("ir/sent", "name=" + getIrName(codeToSend) + ",code=0x" + String(codeToSend, HEX));
     }
 
     lastIrSendTime = millis(); // Update the last send time
@@ -293,7 +294,7 @@ void IRReceiveHandler(void *pvParameters)
     for (;;)
     {
         if (IrReceiver.decode())
-        {   
+        {
             if (IrReceiver.decodedIRData.protocol == PULSE_DISTANCE && !((IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) != 0))
             {
                 uint32_t receivedCode = IrReceiver.decodedIRData.decodedRawData;
@@ -325,11 +326,56 @@ void IRReceiveHandler(void *pvParameters)
 void startIrServices()
 {
     pinMode(IR_SEND_PIN, OUTPUT);
-    pinMode(IR_RECEIVE_PIN, INPUT_PULLUP);
+    // pinMode(IR_RECEIVE_PIN, INPUT_PULLUP);
     enableIrDebug(Config.getFlag("ir_debug"));
     IrSender.begin(IR_SEND_PIN);
     // runs the handleIrAsync function every 5 ms.
     Timers.create("IR Async Handler", 5, handleIrAsync, true);
-    BaseType_t res = xTaskCreatePinnedToCore(IRReceiveHandler, "IR Receive Handler", IR_RECEIVE_TASK_STACK_SIZE, NULL, IR_RECEIVE_TASK_PRIORITY, NULL, 0);
-    Serial.printf("%s IR Receive Handler task created\n", OK_LOG(res == pdPASS));
+    // BaseType_t res = xTaskCreatePinnedToCore(IRReceiveHandler, "IR Receive Handler", IR_RECEIVE_TASK_STACK_SIZE, NULL, IR_RECEIVE_TASK_PRIORITY, NULL, 0);
+    // Serial.printf("%s IR Receive Handler task created\n", OK_LOG(res == pdPASS));
+}
+
+String getAvailableIRCommands()
+{
+    String commands = "[";
+    for (const auto &cmd : irCommands)
+    {
+        commands += "\"" + cmd.name + "\",";
+    }
+    commands += "]";
+    return commands;
+};
+
+IrCommand findIrCommandByName(const String &name)
+{
+    for (const auto &cmd : irCommands)
+    {
+        if (cmd.name.equalsIgnoreCase(name))
+        {
+            return cmd;
+        }
+    }
+    return {static_cast<IrCodes>(0), "UNKNOWN"};
+}
+
+IrCommand findIrCommandByCode(uint32_t code)
+{
+    for (const auto &cmd : irCommands)
+    {
+        if (cmd.code == code)
+        {
+            return cmd;
+        }
+    }
+    return {static_cast<IrCodes>(0), "UNKNOWN"};
+}
+
+bool sendIrCommand(const IrCommand &cmd)
+{
+    if (cmd.name == "UNKNOWN" || cmd.code == 0)
+    {
+        Serial.println("Unknown IR command. Cannot send. {%x%d,%s}");
+        return false;
+    }
+    return sendIRCode(cmd.code);
 }

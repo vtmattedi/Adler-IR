@@ -10,8 +10,7 @@
 #define ONE_WIRE_BUS 16 // DS18b20 bus pin.
 #define LED_PIN 2       // LED pin. (onboard led is pin 2 on ESP-01S boards).
 #define LDR_PIN 33      // LDR pin (ANALOG).
-#define PZEM_RX_PIN 23  // PZEM RX pin (to ESP32 TX pin).
-#define PZEM_TX_PIN 22  // PZEM TX pin (to ESP32 RX pin).
+
 #endif
 
 NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
@@ -112,6 +111,36 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
             res.response = "Unknown POWER subcommand available: [DATA, READ].";
         }
     }
+    else if (message.command == "IR")
+    {
+        res.result = true;
+        if (message.subcommand == "GET")
+        {
+            res.response = getAvailableIRCommands();
+        }
+        else if (message.subcommand == "SEND")
+        {
+            uint32_t code = strtoul(message.args[1].c_str(), nullptr, 16);
+            IrCommand _irCommand = code == 0 ? findIrCommandByName(message.args[1]) : findIrCommandByCode(code);
+
+            bool sent = sendIrCommand(_irCommand);
+            if (sent)
+            {
+                res.result = true;
+                res.response = "IR code sent successfully: 0x" + String(code, HEX);
+            }
+            else
+            {
+                res.result = false;
+                res.response = "Failed to send IR code. Queue may be full.";
+            }
+        }
+        else
+        {
+            res.result = false;
+            res.response = "Unknown IR subcommand available: [GET, SEND].";
+        }
+    }
     else
     {
         res.result = false;
@@ -122,17 +151,14 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
     return res;
 }
 
-String getSystemInfo()
-{
-
-    return "{}";
-}
-
 void onWifiConnected(bool firstConnection)
 {
     Serial.println("WiFi Connected!");
     if (firstConnection)
+    {
         MQTT_Init(REMOTE_MQTT);
+        autoSyncTime();
+    }
     rgbLedWrite(0x00ff); // blue
     Timers.setTimeout([]()
                       {
@@ -140,14 +166,14 @@ void onWifiConnected(bool firstConnection)
                       },
                       5000, true);
 }
-float ramUsagePercent()
-{
-    size_t totalHeap = ESP.getHeapSize();   // Total heap
-    size_t freeHeap = ESP.getFreeHeap();    // Free heap
-    size_t usedHeap = totalHeap - freeHeap; // Used heap
-    float percentUsed = ((float)usedHeap / (float)totalHeap) * 100.0;
-    return percentUsed;
-}
+// float ramUsagePercent()
+// {
+//     size_t totalHeap = ESP.getHeapSize();   // Total heap
+//     size_t freeHeap = ESP.getFreeHeap();    // Free heap
+//     size_t usedHeap = totalHeap - freeHeap; // Used heap
+//     float percentUsed = ((float)usedHeap / (float)totalHeap) * 100.0;
+//     return percentUsed;
+// }
 
 void sensors()
 {
@@ -162,30 +188,6 @@ void sensors()
     serializeJson(doc, msg);
 }
 
-void telemetry()
-{
-    DynamicJsonDocument doc(1024);
-#ifdef COMPILE_HTTP_SERVER
-    bool httpDirect = getHttpState() > 0;
-#else
-    bool httpDirect = false; // TODO: implement direct http and set this to true when it's implemented and enabled.
-#endif
-    JsonObject system = doc.createNestedObject("System");
-    system["Uptime"] = millis() / 1000;
-    system["FreeHeap"] = ramUsagePercent();
-    system["boot_time"] = SystemSettings.get("boot_time");
-    system["time_synced"] = SystemSettings.getFlag("time_synced");
-    system["reset_reason"] = esp_reset_reason();
-    system["wifi_rssi"] = WiFi.RSSI();
-    system["mqtt_connection"] = MQTT_isLocal() ? "Local" : "Remote";
-    system["ip_address"] = WiFi.localIP().toString();
-    system["direct_http"] = httpDirect;
-    String msg;
-    serializeJson(doc, msg);
-    MQTT_Send("/ai_state", msg);
-    // MQTT_Send("/power", gPowerMeter.getDataJson());
-}
-
 void handleButton(ButtonEvent event)
 {
     Serial.printf("Button event: %s\n", getButtonEventName(event));
@@ -196,7 +198,7 @@ void handleButton(ButtonEvent event)
         digitalWrite(PIN_ONBOARD_BLUE_LED, ONBOARD_LED_ON); // power on the RGB LED
         Timers.setTimeout([]()
                           {
-                              rgbLedWrite(0x0000);                                // off
+                              rgbLedWrite(0x0000);                                 // off
                               digitalWrite(PIN_ONBOARD_BLUE_LED, ONBOARD_LED_OFF); // power on the RGB LED
                           },
                           5000, true);
@@ -207,6 +209,7 @@ void setup()
 {
     pinMode(PIN_ONBOARD_BLUE_LED, OUTPUT);
     pinMode(PIN_RGB_POWER, OUTPUT);
+    initM5NanoC6Board();
     rgbLedWrite(0xff0000); // Red
     Serial.begin(115200);
     Serial.println(DEVICE_NAME);
@@ -220,11 +223,17 @@ void setup()
 
     startIrServices();
     startAcService();
-    Timers.create("Telemetry Timer", 30, telemetry, false); // send telemetry every minute
-    Timers.create("Sensor Timer", 5, sensors, false);       // send sensor data every second
-    rgbLedWrite(0xff00);                                    // Green
+    Timers.create("Telemetry Timer", 30, []()
+                  { MQTT_Send("/telemetry", getSystemStatus()); }, false); // send telemetry every minute
+    Timers.create("Sensor Timer", 5, sensors, false);                      // send sensor data every second
+    rgbLedWrite(0xff00);                                                   // Green
     // pinMode(5, INPUT_PULLUP);
     createButtonOnPin(PIN_BUTTON, handleButton);
+    Timers.create("Turbo", 60, []()
+                  { 
+                    if (hour() == 5 && minute() == 0 && Config.getFlag("time_synced")) { 
+                        sendIRCode(TURBO);
+                     } }, false); // check button state every 10ms
 }
 
 void loop()
