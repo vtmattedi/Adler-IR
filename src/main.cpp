@@ -1,18 +1,125 @@
 #include <Arduino.h>
-#include "NightmareNetwork.h"
+#include <NightMareNetwork.h>
 #include <ArduinoJson.h>
-#include <AdlerComponents.h>
 #include <Version.h>
-#include "board.h"
-#include "D:\nightmaresystems\esp32\adler\.pio\libdeps\m5stack-nanoc6\NightMareNetwork\src\Core\buttons.h"
-// #include "PowerMeter.h"
-#ifdef ESP32
-#define ONE_WIRE_BUS 16 // DS18b20 bus pin.
-#define LED_PIN 2       // LED pin. (onboard led is pin 2 on ESP-01S boards).
-#define LDR_PIN 33      // LDR pin (ANALOG).
-#define PZEM_RX_PIN 23  // PZEM RX pin (to ESP32 TX pin).
-#define PZEM_TX_PIN 22  // PZEM TX pin (to ESP32 RX pin).
-#endif
+#include <board.h>
+#include <boardinfo.h>
+#include <TempSensor.h>
+#include <IrController.h>
+#include <NetworkSensor.h>
+#include <Net.h>
+#include <AcController.h>
+
+// Adler: the air-conditioner controller.
+//   sensors     DS18B20 (local), the IR receiver (local), the door (another device, over MQTT)
+//   actuator    the IR transmitter
+//   controller  AcController -- target temperature, door pause, morning shutdown --
+//               speaking the Dashboard's AcController Service vocabulary on the console
+//               and publishing its state document on <Device>/state.
+
+static NetworkSensor doorSensor("door");
+
+// ---- aggregators ------------------------------------------------------------------
+
+static String sensorsReportJson()
+{
+    DynamicJsonDocument doc(256);
+    JsonObject root = doc.to<JsonObject>();
+    tempSensorReport(root);
+    irSensorReport(root);
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+/// The declaration the backend reads with the bare `sensors` command. Local sensors only: the
+/// door is another device's reading and is declared there, not here.
+static String sensorsDeclarationJson()
+{
+    DynamicJsonDocument doc(768);
+    JsonObject root = doc.to<JsonObject>();
+    tempSensorInfo(root);
+    irSensorInfo(root);
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static String infoJson()
+{
+    DynamicJsonDocument doc(2048);
+    doc["device"] = getDeviceName();
+    doc["firmware"] = VERSION;
+    JsonObject board = doc.createNestedObject("board");
+    board["name"] = BOARD_NAME;
+    JsonArray connections = board.createNestedArray("connections");
+    for (size_t i = 0; i < kBoardConnectionCount; i++)
+    {
+        JsonObject c = connections.createNestedObject();
+        c["gpio"] = kBoardConnections[i].gpio;
+        c["device"] = kBoardConnections[i].device;
+        c["level"] = digitalRead(kBoardConnections[i].gpio);
+        c["notes"] = kBoardConnections[i].notes;
+    }
+    JsonObject sensors = doc.createNestedObject("sensors");
+    tempSensorInfo(sensors);
+    irSensorInfo(sensors);
+    JsonObject actuators = doc.createNestedObject("actuators");
+    irActuatorInfo(actuators);
+    JsonObject controllers = doc.createNestedObject("controllers");
+    gAc.info(controllers);
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+static void publishSensors()
+{
+    MQTT_Send("/sensors", sensorsReportJson());
+    irSensorMarkPublished();
+}
+
+/// Publish on change: the temperature moved a step worth seeing, the thermometer appeared or
+/// vanished, or the receiver heard a remote. The 60 s heartbeat covers the rest.
+static void watchForChange()
+{
+    static float lastTemp = NAN;
+    static bool lastConnected = false;
+    TempSensorStatus t = tempSensorStatus();
+    bool tempMoved = (isnan(lastTemp) != isnan(t.tempC)) || (!isnan(t.tempC) && fabsf(t.tempC - lastTemp) >= 0.25f);
+    bool irHeard = irSensorStatus().pendingPublish;
+    if (tempMoved || t.connected != lastConnected || irHeard)
+    {
+        lastTemp = t.tempC;
+        lastConnected = t.connected;
+        publishSensors();
+    }
+}
+
+// ---- pin-level debug helpers ------------------------------------------------------
+
+/// Explicit digit checking rather than toInt(): toInt() returns 0 for junk and GPIO0 is a real
+/// pin, so "SETPIN foo H" would otherwise silently drive GPIO0.
+static bool parsePin(const String &text, uint8_t &pin)
+{
+    if (!text.length())
+        return false;
+    for (size_t i = 0; i < text.length(); i++)
+        if (!isDigit(text[i]))
+            return false;
+    long value = text.toInt();
+    if (value < 0 || value > BOARD_GPIO_MAX)
+        return false;
+    pin = (uint8_t)value;
+    return true;
+}
+
+static String unusablePinMessage(uint8_t pin)
+{
+    return "GPIO" + String(pin) + " is not usable on this board: the flash and USB-console pins are reserved.";
+}
+
+// ---- the resolver -------------------------------------------------------------------
 
 NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
 {
@@ -20,216 +127,219 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
     res.result = false;
     res.response = "not implemented";
 
+    if (gAc.handles(message.command))
+        return gAc.command(message);
+
     if (message.command == "SENSORS")
     {
-        res.result = true;
-        if (message.subcommand == "INFO")
-            res.response = SensorsInfoJson();
-        else if (message.subcommand == "DATA")
-            res.response = SensorsDataJson();
-        else
-            res.response = "Unknown SENSORS subcommand available: [INFO, DATA].";
-    }
-    else if (message.command == "READ")
-    {
-        auto t_init = micros();
-
-        auto t_end = micros();
-        res.result = true;
-        res.response = String(t_end - t_init) + " microseconds";
-    }
-    else if (message.command == "AC")
-    {
-        if (message.subcommand == "STATE")
+        // Bare `sensors` -- no subcommand -- is the declaration the backend asks for on
+        // discovery. The subcommands are the human-facing views of the same data.
+        if (message.subcommand == "" || message.subcommand == "INFO")
         {
             res.result = true;
-            const IrState &currentState = irController.state;
-            DynamicJsonDocument doc(1024);
-            doc["power"] = currentState.power;
-            doc["temp"] = currentState.temp;
-            doc["mode"] = currentState.mode;
-            doc["fan"] = currentState.fan;
-            doc["turbo"] = currentState.turbo;
-            doc["led"] = currentState.led;
-            String msg;
-            serializeJson(doc, msg);
-            res.response = msg;
+            res.response = sensorsDeclarationJson();
         }
-        else if (message.subcommand == "POWER")
+        else if (message.subcommand == "REPORT" || message.subcommand == "DATA")
         {
-            if (message.args[1] == "ON" || message.args[1] == "0")
-                irController.setPower(true);
-            else if (message.args[1] == "OFF" || message.args[1] == "1")
-                irController.setPower(false);
-            else if (message.args[1] == "TOGGLE" || message.args[1] == "2")
-                irController.setPower(!irController.state.power);
+            res.result = true;
+            res.response = sensorsReportJson();
+        }
+        else
+            res.response = "Unknown SENSORS subcommand available: [REPORT, INFO].";
+    }
+    else if (message.command == "INFO")
+    {
+        res.result = true;
+        res.response = infoJson();
+    }
+    else if (message.command == "IR")
+    {
+        if (message.subcommand == "SEND")
+        {
+            uint32_t code = getIrCode(message.args[1]);
+            if (code == 0)
+                res.response = "Unknown IR code '" + message.args[1] + "'. Known: " + getIrCodeNames();
             else
             {
-                res.result = false;
-                res.response = "Unknown POWER argument. Use [ON, OFF, TOGGLE].";
-                return res;
+                res.result = sendIRCode(code);
+                res.response = res.result ? "Queued " + getIrName(code) + " (0x" + String(code, HEX) + ")"
+                                          : "IR queue is full, " + getIrName(code) + " dropped.";
             }
-            res.result = true;
-            res.response = "OK: " + String(irController.state.power ? "ON" : "OFF");
         }
-        else if (message.subcommand == "TEMP")
+        else if (message.subcommand == "LIST")
         {
-            int temp = message.args[1].toInt();
-            if (temp < MIN_AC_TEMP || temp > MAX_AC_TEMP)
+            res.result = true;
+            res.response = getIrCodeNames();
+        }
+        else if (message.subcommand == "INFO")
+        {
+            res.result = true;
+            res.response = IrInfoJson();
+        }
+        else if (message.subcommand == "STATE")
+        {
+            res.result = true;
+            res.response = acIrState.toJson();
+        }
+        else if (message.subcommand == "DEBUG")
+        {
+            String a = message.args[1];
+            a.toUpperCase();
+            if (a == "ON" || a == "1")
+                enableIrDebug(true);
+            else if (a == "OFF" || a == "0")
+                enableIrDebug(false);
+            else
             {
-                res.result = false;
-                res.response = "Temperature out of range. Valid range is " + String(MIN_AC_TEMP) + "-" + String(MAX_AC_TEMP) + "°C.";
+                res.response = "Unknown DEBUG argument. Use [ON, OFF].";
                 return res;
             }
-            irController.setTemp(temp);
             res.result = true;
-            res.response = "OK: " + String(irController.state.temp);
+            res.response = "IR debug " + String(getIrDebug() ? "ON" : "OFF");
         }
         else
-        {
-            res.result = false;
-            res.response = "Unknown AC subcommand available: [STATE, POWER, TEMP].";
-        }
+            res.response = "Unknown IR subcommand available: [SEND <name>, LIST, INFO, STATE, DEBUG ON|OFF].";
     }
-    else if (message.command == "POWER")
+    else if (message.command == "DS18")
     {
-        if (message.subcommand == "DATA")
+        TempSensorStatus s = tempSensorStatus();
+        if (message.subcommand == "READ")
         {
-            res.result = true;
-            // res.response = gPowerMeter.getDataJson();
+            res.result = !isnan(s.tempC);
+            if (res.result)
+                res.response = String(s.tempC, 2);
+            else if (s.connected)
+                res.response = "Sensor found, first conversion still running.";
+            else
+                res.response = "No DS18B20 found on GPIO" + String(DS18B20_PIN) + ".";
         }
-        else if (message.subcommand == "READ")
+        else if (message.subcommand == "STATUS")
         {
-            // res.result = gPowerMeter.readNow();
-            // if (res.result)
-            //     res.response = gPowerMeter.getDataJson();
-            // else
-            //     res.response = "Power meter read failed.";
+            DynamicJsonDocument doc(256);
+            doc["connected"] = s.connected;
+            doc["pin"] = DS18B20_PIN;
+            doc["address"] = s.address;
+            doc["parasite"] = s.parasite;
+            doc["temperature"] = s.tempC;
+            if (s.lastReadMs)
+                doc["age_ms"] = millis() - s.lastReadMs;
+            String json;
+            serializeJson(doc, json);
+            res.response = json;
+            res.result = true;
+        }
+        else if (message.subcommand == "PROBE")
+        {
+            uint8_t pin = 0;
+            if (!parsePin(message.args[1], pin))
+                res.response = "Usage: DS18 PROBE <pin>";
+            else if (!isUsableGpio(pin))
+                res.response = unusablePinMessage(pin);
+            else
+            {
+                res.result = true;
+                res.response = Ds18ProbeJson(pin);
+            }
         }
         else
+            res.response = "Unknown DS18 subcommand available: [READ, STATUS, PROBE <pin>].";
+    }
+    else if (message.command == "SETPIN")
+    {
+        // No subcommand keyword: the pin is args[0], which the parser also exposes as subcommand.
+        uint8_t pin = 0;
+        String level = message.args[1];
+        level.toUpperCase();
+        if (!parsePin(message.subcommand, pin))
+            res.response = "Usage: SETPIN <pin> <H|L>";
+        else if (!isUsableGpio(pin))
+            res.response = unusablePinMessage(pin);
+        else if (level == "H" || level == "HIGH" || level == "1" || level == "L" || level == "LOW" || level == "0")
         {
-            res.result = false;
-            res.response = "Unknown POWER subcommand available: [DATA, READ].";
+            bool high = (level == "H" || level == "HIGH" || level == "1");
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, high ? HIGH : LOW);
+            res.result = true;
+            res.response = "GPIO" + String(pin) + " driven " + (high ? "HIGH" : "LOW");
+            const char *device = boardDeviceOnPin(pin);
+            if (device != nullptr)
+                res.response += " (note: " + String(device) + " is on this pin, so it is no longer under its own control)";
         }
+        else
+            res.response = "Unknown level '" + message.args[1] + "'. Use [H, L].";
+    }
+    else if (message.command == "BOARDINFO")
+    {
+        res.result = true;
+        res.response = BoardInfoJson();
+    }
+    else if (message.command == "NET")
+    {
+        res.result = true;
+        res.response = String("{\"droppedMessages\":") + Net_droppedMessages() + "}";
+    }
+    else if (message.command == "HELP")
+    {
+        res.result = true;
+        res.response = "Groups: AC, DOOR, IR, DS18, SENSORS. Root: INFO, SETTEMP, TARGET, POWER, MANUALSYNC, "
+                       "SLEEP-IN, SLEEP, SENDIR, PAUSEDOORSENSOR, SETPIN, BOARDINFO, NET, HELP. "
+                       "<GROUP> HELP for details.";
     }
     else
-    {
-        res.result = false;
-        res.response = "Unknown command available: [SENSORS, AC, POWER].";
-    }
-    String raw = message.command + " " + message.subcommand + " " + message.args[1] + " " + message.args[2] + " " + message.args[3] + " " + message.args[4];
-    Serial.printf("input = %s, result = <%s>\n", raw.c_str(), OK_LOG(res.result));
+        res.response = "Unknown command available: [AC, DOOR, IR, DS18, SENSORS, INFO, SETPIN, BOARDINFO, NET, HELP].";
+
     return res;
 }
 
-String getSystemInfo()
-{
-
-    return "{}";
-}
+// ---- lifecycle -------------------------------------------------------------------------
 
 void onWifiConnected(bool firstConnection)
 {
     Serial.println("WiFi Connected!");
     if (firstConnection)
         MQTT_Init(REMOTE_MQTT);
-    rgbLedWrite(0x00ff); // blue
-    Timers.setTimeout([]()
-                      {
-                          rgbLedWrite(0x0000); // off
-                      },
-                      5000, true);
-}
-float ramUsagePercent()
-{
-    size_t totalHeap = ESP.getHeapSize();   // Total heap
-    size_t freeHeap = ESP.getFreeHeap();    // Free heap
-    size_t usedHeap = totalHeap - freeHeap; // Used heap
-    float percentUsed = ((float)usedHeap / (float)totalHeap) * 100.0;
-    return percentUsed;
 }
 
-void sensors()
+void onMqttConnected()
 {
-    float temperature = getTemperature();
-    MQTT_Send("/sensors/temperature", String(temperature));
-    DynamicJsonDocument doc(1024);
-    const IrState &currentState = irController.state;
-    doc["power"] = currentState.power;
-    doc["temp"] = currentState.temp;
-    doc["turbo"] = currentState.turbo;
-    String msg;
-    serializeJson(doc, msg);
-}
-
-void telemetry()
-{
-    DynamicJsonDocument doc(1024);
-#ifdef COMPILE_HTTP_SERVER
-    bool httpDirect = getHttpState() > 0;
-#else
-    bool httpDirect = false; // TODO: implement direct http and set this to true when it's implemented and enabled.
-#endif
-    JsonObject system = doc.createNestedObject("System");
-    system["Uptime"] = millis() / 1000;
-    system["FreeHeap"] = ramUsagePercent();
-    system["boot_time"] = SystemSettings.get("boot_time");
-    system["time_synced"] = SystemSettings.getFlag("time_synced");
-    system["reset_reason"] = esp_reset_reason();
-    system["wifi_rssi"] = WiFi.RSSI();
-    system["mqtt_connection"] = MQTT_isLocal() ? "Local" : "Remote";
-    system["ip_address"] = WiFi.localIP().toString();
-    system["direct_http"] = httpDirect;
-    String msg;
-    serializeJson(doc, msg);
-    MQTT_Send("/ai_state", msg);
-    // MQTT_Send("/power", gPowerMeter.getDataJson());
-}
-
-void handleButton(ButtonEvent event)
-{
-    Serial.printf("Button event: %s\n", getButtonEventName(event));
-    if (event == BUTTON_EVENT_CLICKED)
-    {
-        sendIRCode(POWER);
-        rgbLedWrite(0x00ff);                                // blue
-        digitalWrite(PIN_ONBOARD_BLUE_LED, ONBOARD_LED_ON); // power on the RGB LED
-        Timers.setTimeout([]()
-                          {
-                              rgbLedWrite(0x0000);                                // off
-                              digitalWrite(PIN_ONBOARD_BLUE_LED, ONBOARD_LED_OFF); // power on the RGB LED
-                          },
-                          5000, true);
-    }
+    // Runs on the MQTT task. Publishing is safe -- fresh Strings, thread-safe client -- but
+    // nothing here touches application state.
+    MQTT_Send("/info", infoJson());
+    MQTT_Send("/state", gAc.stateJson());
 }
 
 void setup()
 {
-    pinMode(PIN_ONBOARD_BLUE_LED, OUTPUT);
-    pinMode(PIN_RGB_POWER, OUTPUT);
-    rgbLedWrite(0xff0000); // Red
+    Config.begin(); // first: the device name and every module's settings come from it
     Serial.begin(115200);
-    Serial.println(DEVICE_NAME);
+    Serial.println(getDeviceName());
     Serial.printf("\tFirmware Version: %s\n", VERSION);
     Serial.printf("\tBuild Date: %s\n", BUILD_TIMESTAMP);
+    printBoardInfo();
     Serial.println("Starting NightMare Network...");
+
     setCommandResolver(localHandleNightMareCommand);
     WiFi_onConnected(onWifiConnected);
     WiFi_Auto();
-    startSensors();
 
+    // The inbox before MQTT connects, so the first retained messages land in it.
+    doorSensor.loadBinding();
+    Net_registerSensor(&doorSensor);
+    Net_begin();
+    MQTT_onConnected(onMqttConnected);
+
+    setupTempSensor();
     startIrServices();
-    startAcService();
-    Timers.create("Telemetry Timer", 30, telemetry, false); // send telemetry every minute
-    Timers.create("Sensor Timer", 5, sensors, false);       // send sensor data every second
-    rgbLedWrite(0xff00);                                    // Green
-    // pinMode(5, INPUT_PULLUP);
-    createButtonOnPin(PIN_BUTTON, handleButton);
+    startAcController(currentTemperature, &doorSensor);
+
+    Timers.create("sensors_heartbeat", 60, publishSensors);
+    Timers.create("sensors_watch", 1, watchForChange);
 }
 
 void loop()
 {
     Timers.run();
     scheduler.run();
+    Net_loop();
     NightMareCommand_SerialResolver(&Serial, '\n');
 }

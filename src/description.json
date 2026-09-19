@@ -77,11 +77,6 @@
             "name": "temperature",
             "description": "Current temperature in Celsius.",
             "type": "float"
-        },
-        {
-            "name": "power",
-            "description": "Current power consumption in watts.",
-            "type": "float"
         }
     ]
 }

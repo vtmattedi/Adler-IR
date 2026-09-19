@@ -14,9 +14,8 @@ constexpr std::array<const char *, 7> kActions = {
     "ac_set_target"
 };
 
-constexpr std::array<const char *, 2> kSensors = {
-    "temperature",
-    "power"
+constexpr std::array<const char *, 1> kSensors = {
+    "temperature"
 };
 
 constexpr char kActionsJson[] = R"json(\n[
@@ -97,11 +96,6 @@ constexpr char kSensorsJson[] = R"json(\n[
   {
     "name": "temperature",
     "description": "Current temperature in Celsius.",
-    "type": "float"
-  },
-  {
-    "name": "power",
-    "description": "Current power consumption in watts.",
     "type": "float"
   }
 ]\n)json";
@@ -184,11 +178,6 @@ constexpr char kDescriptionJson[] = R"json(\n{
     {
       "name": "temperature",
       "description": "Current temperature in Celsius.",
-      "type": "float"
-    },
-    {
-      "name": "power",
-      "description": "Current power consumption in watts.",
       "type": "float"
     }
   ]
