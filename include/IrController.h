@@ -1,15 +1,12 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <NightMareNetwork.h>
 #include <board.h>
 
 // The IR side of Adler is two things on one pair of pins:
 //   an actuator -- codes queued by sendIRCode() and transmitted by a pump. Codes are
 //   generic: the table knows each one's protocol. The AC's own codes also advance
 //   the state the AC unit is believed to be in (AcIrStateController) as they are queued;
-//   a sensor    -- whatever the demodulator hears, decoded on its own task and handed
-//   to the network as the `ir` reading, whichever remote it came from.
+//   a receiver  -- decoded in the main Runtime and exposed as a Value and Event.
 
 #define MIN_AC_TEMP 18
 #define MAX_AC_TEMP 30
@@ -21,8 +18,6 @@
 // A code the receiver hears this soon after we transmitted the same code is our own
 // LED bouncing off the wall, not the remote.
 #define IR_SELF_ECHO_WINDOW_MS 400
-#define IR_RECEIVE_TASK_STACK_SIZE 4096
-#define IR_RECEIVE_TASK_PRIORITY 1
 
 // Both are constants rather than macros on purpose. IRSend.hpp does
 //     #if defined(IR_SEND_PIN)
@@ -142,11 +137,8 @@ bool getIrDebug();
 /// advances the AC belief. False if the queue is full or the code is not in the table, in
 /// which case nothing changes.
 bool sendIRCode(uint32_t code);
-/// @brief Pin assignment, debug flag, pending queue depth and the AC belief as JSON.
-String IrInfoJson();
 void startIrServices();
-/// @brief The transmitter's entry in the descriptor's `actuators` block.
-void irActuatorInfo(JsonObject into);
+void tickIrServices();
 
 // ---- the receiver as a sensor ------------------------------------------
 
@@ -157,15 +149,9 @@ struct IrSensorStatus
     uint32_t code;          ///< Raw code of the last frame.
     char name[24];          ///< getIrName() of it, or "<PROTOCOL>:0x<raw>" for a remote that is not ours.
     uint32_t lastReceiveMs; ///< millis() of the last frame; 0 if never.
-    bool pendingPublish;    ///< A frame arrived that the network has not been told about.
 };
 
 /// @brief Snapshot of the last received frame, copied under lock.
 IrSensorStatus irSensorStatus();
-/// @brief Clears the pending-publish flag. Called by whoever publishes the reading.
-void irSensorMarkPublished();
-/// @brief This sensor's field in the readings object: `ir`, the last decoded code by name,
-/// "<PROTOCOL>:0x<raw>" for a remote that is not in the table, or null if nothing was heard.
-void irSensorReport(JsonObject into);
-/// @brief This sensor's entry in the declaration.
-void irSensorInfo(JsonObject into);
+using IrReceivedHandler = void (*)(uint32_t code, const String& name);
+void setIrReceivedHandler(IrReceivedHandler handler);

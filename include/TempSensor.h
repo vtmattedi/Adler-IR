@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <board.h>
 
 /// 1-Wire data pin for the DS18B20. The bus needs an external 4.7k pull-up to 3.3V: the ESP32
@@ -15,12 +14,7 @@
 /// A single CRC error is not worth reporting the temperature as unknown.
 #define TEMP_MAX_FAILURES 3
 
-/// Only bus I/O and the odd log line run on this task -- no JSON or MQTT.
-#define TEMP_TASK_STACK 3072
-/// Above the Arduino loop task (1), far below WiFi (18+).
-#define TEMP_TASK_PRIORITY 1
-
-/// @brief Everything the task knows about the sensor, as of one instant.
+/// @brief The latest sensor status, updated by the application's Runtime.
 struct TempSensorStatus
 {
     bool connected;      ///< Found on the bus and not yet written off by TEMP_MAX_FAILURES.
@@ -30,20 +24,15 @@ struct TempSensorStatus
     char address[17];    ///< ROM code in hex; empty while not connected.
 };
 
-/// @brief Starts the sampling task and returns immediately. The sensor is found and read on the
-/// task; a missing one is retried every TEMP_READ_INTERVAL_MS, so it can be plugged in later.
+/// @brief Initializes the bus; the Runtime then calls tickTempSensor().
 void setupTempSensor();
+void tickTempSensor();
+void rescanTempSensor();
 /// @brief Latest reading in Celsius, or NAN when there is none (not found yet, or lost).
-/// Never blocks: it returns what the task last read.
+/// Never blocks: it returns the latest completed conversion.
 float currentTemperature();
-/// @brief Snapshot of the sensor state for diagnostics. Copied under one lock, so the fields never
-/// mix values from before and after one of the task's updates.
+/// @brief Snapshot of the sensor state.
 TempSensorStatus tempSensorStatus();
-
-/// @brief This sensor's field in the readings object: `temperature`, null while unknown.
-void tempSensorReport(JsonObject into);
-/// @brief This sensor's entry in the declaration: what the backend reads, plus the hardware details.
-void tempSensorInfo(JsonObject into);
 
 /// @brief Debug probe: brings up a throwaway OneWire bus on an arbitrary pin, looks for a DS18B20
 /// and reads it, without disturbing the configured sensor. Meant for finding which pin a sensor is
