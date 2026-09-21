@@ -24,7 +24,9 @@
  *      not use. Losing that record is the whole failure this file prevents.
  *   5. Never reuse a revision name for different wiring. Names are permanent.
  *
- * Revision names are BOARD_-prefixed so their role as wiring selectors is clear.
+ * Revision names are BOARD_-prefixed rather than bare ESP_C3_V1 to keep them
+ * clearly apart from ESP32_C3, which platformio.ini also defines and which
+ * means something unrelated (NightMareNetwork's HWCDC console switch).
  * ------------------------------------------------------------------- */
 
 #if (defined(BOARD_C3_V1) + defined(BOARD_C6_V1) + defined(BOARD_ESP32_V1)) != 1

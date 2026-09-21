@@ -1,10 +1,10 @@
 #include "IrController.h"
-#include <AdlerSettings.h>
 #include <IRremote.hpp>
 
 // ---- the code table ------------------------------------------------------------
 // One table drives name -> code, code -> name and code -> protocol, so the three
-// can never disagree. AC code names stay unprefixed for the sendIr Action.
+// can never disagree. Wire names for the AC stay unprefixed: they are what the
+// Dashboard's AcController Service sends as `SENDIR <name>`.
 
 struct IrCodeEntry
 {
@@ -226,7 +226,7 @@ bool irDebugEnabled = false;
 void enableIrDebug(bool enable)
 {
     irDebugEnabled = enable;
-    settings.set("ir_debug", enable ? "1" : "0");
+    Config.setFlag("ir_debug", enable);
 }
 
 bool getIrDebug()
@@ -240,7 +240,8 @@ static uint32_t _irQueue[IR_ASYNC_QUEUE_SIZE] = {0};
 static uint8_t _irQueueWrite = 0;
 static uint8_t _irQueueReadIndex = 0;
 
-/// The send pump records what it last transmitted so the receiver can filter echoes.
+/// Shared between the pump (loop task) and the receive task: what we last sent and when, so
+/// the receiver can tell our own echo from a remote.
 static portMUX_TYPE irLock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t lastSentCode = 0;
 static uint32_t lastSentMs = 0;
@@ -336,8 +337,7 @@ static void handleIrAsync()
 // ---- receiver as a sensor --------------------------------------------------------
 
 static portMUX_TYPE sensorLock = portMUX_INITIALIZER_UNLOCKED;
-static IrSensorStatus irSensor = {false, 0, "", 0};
-static IrReceivedHandler receivedHandler = nullptr;
+static IrSensorStatus irSensor = {false, 0, "", 0, false};
 
 IrSensorStatus irSensorStatus()
 {
@@ -347,7 +347,12 @@ IrSensorStatus irSensorStatus()
     return copy;
 }
 
-void setIrReceivedHandler(IrReceivedHandler handler) { receivedHandler = handler; }
+void irSensorMarkPublished()
+{
+    portENTER_CRITICAL(&sensorLock);
+    irSensor.pendingPublish = false;
+    portEXIT_CRITICAL(&sensorLock);
+}
 
 static void recordReceived(uint32_t code, const String &name)
 {
@@ -357,8 +362,8 @@ static void recordReceived(uint32_t code, const String &name)
     strncpy(irSensor.name, name.c_str(), sizeof(irSensor.name) - 1);
     irSensor.name[sizeof(irSensor.name) - 1] = '\0';
     irSensor.lastReceiveMs = millis();
+    irSensor.pendingPublish = true;
     portEXIT_CRITICAL(&sensorLock);
-    if (receivedHandler) receivedHandler(code, name);
 }
 
 /// @brief Whether a decoded frame is our own transmission coming back off the room.
@@ -371,10 +376,14 @@ static bool isSelfEcho(uint32_t code)
     return sent == code && sentMs && (millis() - sentMs) < IR_SELF_ECHO_WINDOW_MS;
 }
 
-static void pollIrReceiver()
+static void IRReceiveHandler(void *pvParameters)
 {
-    static unsigned long lastReceiveTime = 0;
-    static uint32_t lastReceivedCode = 0;
+    IrReceiver.begin(IR_RECEIVE_PIN);
+    Serial.printf("[IR] receiver listening on GPIO%u\n", IR_RECEIVE_PIN);
+    unsigned long lastReceiveTime = 0;
+    uint32_t lastReceivedCode = 0;
+    for (;;)
+    {
         if (IrReceiver.decode())
         {
             const decode_type_t protocol = IrReceiver.decodedIRData.protocol;
@@ -436,23 +445,82 @@ static void pollIrReceiver()
             }
             IrReceiver.resume();
         }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
+void irSensorReport(JsonObject into)
+{
+    IrSensorStatus s = irSensorStatus();
+    if (s.everReceived)
+        into["ir"] = s.name;
+    else
+        into["ir"] = nullptr;
+}
+
+void irSensorInfo(JsonObject into)
+{
+    IrSensorStatus s = irSensorStatus();
+    JsonObject ir = into.createNestedObject("ir");
+    ir["id"] = "ir";
+    ir["label"] = "IR receiver";
+    ir["unit"] = "";
+    ir["type"] = "string";
+    ir["disable"] = false;
+    ir["critical"] = false;
+    ir["hardware"] = "TSOP demodulator; decodes the AC remote (pulse-distance) and the HY350 remote (NEC)";
+    ir["pin"] = IR_RECEIVE_PIN;
+    // A demodulator idles HIGH; a receive pin that reads LOW with no remote in use is unpowered or miswired.
+    ir["connected"] = digitalRead(IR_RECEIVE_PIN) == HIGH;
+    if (s.everReceived)
+    {
+        ir["value"] = s.name;
+        ir["age_ms"] = millis() - s.lastReceiveMs;
+    }
+    else
+    {
+        ir["value"] = nullptr;
+    }
+}
+
+void irActuatorInfo(JsonObject into)
+{
+    JsonObject ir = into.createNestedObject("ir");
+    ir["hardware"] = "IR LED, 38 kHz LEDC carrier";
+    ir["pin"] = IR_SEND_PIN;
+    ir["queued"] = irQueueDepth();
+    ir["codes"] = getIrCodeNames();
+    JsonObject belief = ir.createNestedObject("acState");
+    belief["power"] = acIrState.state.power;
+    belief["temp"] = acIrState.state.temp;
+    belief["mode"] = acIrState.state.mode;
+    belief["turbo"] = acIrState.state.turbo;
+    belief["known"] = acIrState.known;
+}
+
+String IrInfoJson()
+{
+    String json = "{";
+    json += "\"sendPin\": " + String(IR_SEND_PIN) + ",";
+    json += "\"receivePin\": " + String(IR_RECEIVE_PIN) + ",";
+    json += "\"receivePinLevel\": " + String(digitalRead(IR_RECEIVE_PIN)) + ",";
+    json += "\"debug\": " + String(irDebugEnabled ? "true" : "false") + ",";
+    json += "\"queued\": " + String(irQueueDepth()) + ",";
+    json += "\"acState\": " + acIrState.toJson();
+    json += "}";
+    return json;
 }
 
 void startIrServices()
 {
     pinMode(IR_SEND_PIN, OUTPUT);
     pinMode(IR_RECEIVE_PIN, INPUT_PULLUP);
-    irDebugEnabled = settings.get("ir_debug", "0") == "1";
+    enableIrDebug(Config.getFlag("ir_debug"));
     IrSender.begin(IR_SEND_PIN);
-    IrReceiver.begin(IR_RECEIVE_PIN);
     Serial.printf("[IR] tx GPIO%u, rx GPIO%u, debug %s\n", IR_SEND_PIN, IR_RECEIVE_PIN, irDebugEnabled ? "ON" : "OFF");
     Serial.printf("[IR] rx pin idle level %d %s\n", digitalRead(IR_RECEIVE_PIN),
                   digitalRead(IR_RECEIVE_PIN) ? "(expected)" : "(SUSPECT: check receiver power and wiring)");
-    Serial.printf("[IR] receiver listening on GPIO%u\n", IR_RECEIVE_PIN);
-}
-
-void tickIrServices()
-{
-    handleIrAsync();
-    pollIrReceiver();
+    Timers.create("ir_pump", 5, handleIrAsync, true);
+    BaseType_t res = xTaskCreate(IRReceiveHandler, "ir_receive", IR_RECEIVE_TASK_STACK_SIZE, NULL, IR_RECEIVE_TASK_PRIORITY, NULL);
+    Serial.printf("%s IR receive task created\n", OK_LOG(res == pdPASS));
 }
