@@ -4,6 +4,7 @@
 .vscode/launch.json
 .vscode/ipch
 /include/Creds
+creds.h
 src/\[BACKUP\]
 src/Test
 Adler.docx
