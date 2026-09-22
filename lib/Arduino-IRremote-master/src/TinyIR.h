@@ -2,11 +2,11 @@
  *  TinyIR.h
  *
  *
- *  Copyright (C) 2021-2023  Armin Joachimsmeyer
+ *  Copyright (C) 2021-2025  Armin Joachimsmeyer
  *  armin.joachimsmeyer@gmail.com
  *
- *  This file is part of IRMP https://github.com/IRMP-org/IRMP.
  *  This file is part of Arduino-IRremote https://github.com/Arduino-IRremote/Arduino-IRremote.
+ *  This file is also part of IRMP https://github.com/IRMP-org/IRMP.
  *
  *  TinyIRReceiver is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -30,13 +30,13 @@
 
 #include "LongUnion.h"
 
-/** \addtogroup TinyReceiver Minimal receiver for NEC and FAST protocol
+/** \addtogroup TinyIRReceiver Minimal receiver for NEC and FAST protocol
  * @{
  */
 
-#define VERSION_TINYIR "1.2.0"
-#define VERSION_TINYIR_MAJOR 1
-#define VERSION_TINYIR_MINOR 2
+#define VERSION_TINYIR "2.3.0"
+#define VERSION_TINYIR_MAJOR 2
+#define VERSION_TINYIR_MINOR 3
 #define VERSION_TINYIR_PATCH 0
 // The change log is at the bottom of the file
 
@@ -53,14 +53,14 @@
 
 #define NEC_UNIT                560
 
-#define NEC_HEADER_MARK         (16 * NEC_UNIT) // 9000
-#define NEC_HEADER_SPACE        (8 * NEC_UNIT)  // 4500
+#define NEC_HEADER_MARK         (16 * NEC_UNIT) // 8860
+#define NEC_HEADER_SPACE        (8 * NEC_UNIT)  // 4480
 
 #define NEC_BIT_MARK            NEC_UNIT
-#define NEC_ONE_SPACE           (3 * NEC_UNIT)  // 1690
+#define NEC_ONE_SPACE           (3 * NEC_UNIT)  // 1680
 #define NEC_ZERO_SPACE          NEC_UNIT
 
-#define NEC_REPEAT_HEADER_SPACE (4 * NEC_UNIT)  // 2250
+#define NEC_REPEAT_HEADER_SPACE (4 * NEC_UNIT)  // 2240
 
 #define NEC_REPEAT_PERIOD       110000 // Commands are repeated every 110 ms (measured from start to start) for as long as the key on the remote control is held down.
 #define NEC_MINIMAL_DURATION     49900 // NEC_HEADER_MARK + NEC_HEADER_SPACE + 32 * 2 * NEC_UNIT + NEC_UNIT // 2.5 because we assume more zeros than ones
@@ -77,15 +77,15 @@
  * - Repeats are sent as complete frames but in a 50 ms period / with a 21 ms distance.
  */
 /*
-Protocol=FAST Address=0x0 Command=0x76 Raw-Data=0x8976 16 bits LSB first
+ Protocol=FAST Address=0x0 Command=0x76 Raw-Data=0x8976 16 bits LSB first
  +2100,-1050
  + 550,- 500 + 550,-1550 + 550,-1550 + 550,- 500
  + 550,-1550 + 550,-1550 + 550,-1550 + 550,- 500
  + 550,-1550 + 550,- 500 + 550,- 500 + 550,-1550
  + 550,- 500 + 550,- 500 + 550,- 500 + 550,-1550
  + 550
-Sum: 28900
-*/
+ Sum: 28900
+ */
 #define FAST_KHZ                  38
 #define FAST_ADDRESS_BITS          0 // No address
 #define FAST_COMMAND_BITS         16 // Command and inverted command (parity)
@@ -122,10 +122,12 @@ Sum: 28900
 
 #define TINY_RECEIVER_HEADER_MARK           FAST_HEADER_MARK
 #define TINY_RECEIVER_HEADER_SPACE          FAST_HEADER_SPACE
+#define TINY_RECEIVER_MARK_TIMEOUT          (2 * FAST_HEADER_MARK)
 
 #define TINY_RECEIVER_BIT_MARK              FAST_BIT_MARK
 #define TINY_RECEIVER_ONE_SPACE             FAST_ONE_SPACE
 #define TINY_RECEIVER_ZERO_SPACE            FAST_ZERO_SPACE
+#define TINY_RECEIVER_ONE_THRESHOLD         (2 * FAST_UNIT)  // 1052
 
 #define TINY_RECEIVER_MAXIMUM_REPEAT_DISTANCE  FAST_MAXIMUM_REPEAT_DISTANCE // for repeat detection
 
@@ -133,6 +135,8 @@ Sum: 28900
 
 #define TINY_RECEIVER_ADDRESS_BITS          NEC_ADDRESS_BITS // the address bits + parity
 #  if defined(USE_ONKYO_PROTOCOL)
+#define TINY_RECEIVER_ADDRESS_HAS_8_BIT_PARITY  false     // 16 bit address without parity
+#  elif defined(USE_EXTENDED_NEC_PROTOCOL)
 #define TINY_RECEIVER_ADDRESS_HAS_8_BIT_PARITY  false     // 16 bit address without parity
 #  else
 #define TINY_RECEIVER_ADDRESS_HAS_8_BIT_PARITY  true     // 8 bit and 8 bit parity
@@ -149,45 +153,23 @@ Sum: 28900
 #define TINY_RECEIVER_UNIT                  NEC_UNIT
 
 #define TINY_RECEIVER_HEADER_MARK           NEC_HEADER_MARK
+#define TINY_RECEIVER_MARK_TIMEOUT          (2 * NEC_HEADER_MARK)
 #define TINY_RECEIVER_HEADER_SPACE          NEC_HEADER_SPACE
 
 #define TINY_RECEIVER_BIT_MARK              NEC_BIT_MARK
 #define TINY_RECEIVER_ONE_SPACE             NEC_ONE_SPACE
 #define TINY_RECEIVER_ZERO_SPACE            NEC_ZERO_SPACE
+#define TINY_RECEIVER_ONE_THRESHOLD         (2 * NEC_UNIT)  // 1120
 
 #define TINY_RECEIVER_MAXIMUM_REPEAT_DISTANCE  NEC_MAXIMUM_REPEAT_DISTANCE
 #endif
 
+#if defined(USE_CALLBACK_FOR_TINY_RECEIVER)
 /*
- * This function is called, if a complete command was received and must be implemented in the file (user code) which includes this library.
- * The parameter size is dependent of the code variant used in order to save program memory.
- * We have 6 cases: 0, 8 bit or 16 bit address, each with 8 or 16 bit command
+ * This function is called, if a complete command was received and must be implemented in the file (user code)
+ * which includes this library if USE_CALLBACK_FOR_TINY_RECEIVER is activated.
  */
-#if (TINY_RECEIVER_ADDRESS_BITS > 0)
-#  if TINY_RECEIVER_ADDRESS_HAS_8_BIT_PARITY
-// 8 bit address here
-#    if TINY_RECEIVER_COMMAND_HAS_8_BIT_PARITY
-extern void handleReceivedTinyIRData(uint8_t aAddress, uint8_t aCommand, uint8_t aFlags);   // Standard NEC callback
-#    else
-extern void handleReceivedTinyIRData(uint8_t aAddress, uint16_t aCommand, uint8_t aFlags); // If SUPPORT_ONKYO_16_BIT_COMMAND is defined
-#    endif
-
-#  else // TINY_RECEIVER_ADDRESS_HAS_8_BIT_PARITY
-// 16 bit address here
-#    if TINY_RECEIVER_COMMAND_HAS_8_BIT_PARITY
-extern void handleReceivedTinyIRData(uint16_t aAddress, uint8_t aCommand, uint8_t aFlags);
-#    else
-extern void handleReceivedTinyIRData(uint16_t aAddress, uint16_t aCommand, uint8_t aFlags);
-#    endif
-#  endif
-
-#else
-// FAST protocol - No address here
-#  if TINY_RECEIVER_COMMAND_HAS_8_BIT_PARITY
-extern void handleReceivedTinyIRData(uint8_t aCommand, uint8_t aFlags); // Standard FAST callback
-#  else
-extern void handleReceivedTinyIRData(uint16_t aCommand, uint8_t aFlags); // If "TINY_RECEIVER_COMMAND_HAS_8_BIT_PARITY  false" is defined. 16 bit without parity.
-#  endif
+extern void handleReceivedTinyIRData();
 #endif
 
 #if !defined(MICROS_IN_ONE_SECOND)
@@ -216,7 +198,7 @@ extern void handleReceivedTinyIRData(uint16_t aCommand, uint8_t aFlags); // If "
 #define IR_RECEIVER_STATE_WAITING_FOR_DATA_MARK         4
 #define IR_RECEIVER_STATE_WAITING_FOR_STOP_MARK         5
 /**
- * Control and data variables of the state machine for TinyReceiver
+ * Control and data variables of the state machine for TinyIRReceiver
  */
 struct TinyIRReceiverStruct {
     /*
@@ -240,16 +222,15 @@ struct TinyIRReceiverStruct {
 
 /*
  * Definitions for member TinyIRReceiverCallbackDataStruct.Flags
- * From IRremoteInt.h
+ * This is a copy of flags from IRremoteInt.h
  */
 #define IRDATA_FLAGS_EMPTY              0x00
 #define IRDATA_FLAGS_IS_REPEAT          0x01
-#define IRDATA_FLAGS_IS_AUTO_REPEAT     0x02 // not used here, overwritten with _IRDATA_FLAGS_IS_SHORT_REPEAT
+#define IRDATA_FLAGS_IS_AUTO_REPEAT     0x02 // not used for TinyIR
 #define IRDATA_FLAGS_PARITY_FAILED      0x04 ///< the current (autorepeat) frame violated parity check
 
 /**
- * Can be used by the callback to transfer received data to main loop for further processing.
- * E.g. with volatile struct TinyIRReceiverCallbackDataStruct sCallbackData;
+ * Is filled before calling the user callback to transfer received data to main loop for further processing.
  */
 struct TinyIRReceiverCallbackDataStruct {
 #if (TINY_RECEIVER_ADDRESS_BITS > 0)
@@ -266,27 +247,63 @@ struct TinyIRReceiverCallbackDataStruct {
     uint8_t Command;
 #endif
     uint8_t Flags; // Bit coded flags. Can contain one of the bits: IRDATA_FLAGS_IS_REPEAT and IRDATA_FLAGS_PARITY_FAILED
-    bool justWritten; ///< Is set true if new data is available. Used by the main loop, to avoid multiple evaluations of the same IR frame.
+    bool justWritten; ///< Is set true if new data is available. Used by the main loop / TinyIRReceiverDecode(), to avoid multiple evaluations of the same IR frame.
 };
+extern volatile TinyIRReceiverCallbackDataStruct TinyIRReceiverData;
 
+bool isIRReceiverAttachedForTinyReceiver();
 bool initPCIInterruptForTinyReceiver();
 bool enablePCIInterruptForTinyReceiver();
 void disablePCIInterruptForTinyReceiver();
 bool isTinyReceiverIdle();
-#if defined(USE_FAST_PROTOCOL)
-void printTinyReceiverResultMinimal(Print *aSerial, uint16_t aCommand, uint8_t aFlags);
-#else
-void printTinyReceiverResultMinimal(Print *aSerial, uint8_t aAddress, uint8_t aCommand, uint8_t aFlags);
-#endif
+bool TinyReceiverDecode();
+void printTinyReceiverResultMinimal(Print *aSerial);
+
+bool isIRReceiverAttachedForTinyIRReceiver();
+bool initPCIInterruptForTinyIRReceiver();
+bool enablePCIInterruptForTinyIRReceiver();
+void disablePCIInterruptForTinyIRReceiver();
+bool isTinyIRReceiverIdle();
+bool TinyIRReceiverDecode();
+void printTinyIRReceiverResultMinimal(Print *aSerial);
+
 
 void sendFAST(uint8_t aSendPin, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0);
 void sendFast8BitAndParity(uint8_t aSendPin, uint8_t aCommand, uint_fast8_t aNumberOfRepeats = 0);
-void sendONKYO(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0); // Send NEC with 16 bit command, even if aCommand < 0x100
+void sendONKYO(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0, bool aSendNEC2Repeats = false); // Send NEC with 16 bit command, even if aCommand < 0x100
 void sendNECMinimal(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0)
         __attribute__ ((deprecated ("Renamed to sendNEC().")));
-void sendNEC(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0);
+void sendNEC(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0, bool aSendNEC2Repeats = false);
+void sendExtendedNEC(uint8_t aSendPin, uint16_t aAddress, uint16_t aCommand, uint_fast8_t aNumberOfRepeats = 0, bool aSendNEC2Repeats = false);
+
+#if defined(NO_LED_FEEDBACK_CODE)
+#  if !defined(NO_LED_RECEIVE_FEEDBACK_CODE)
+#define NO_LED_RECEIVE_FEEDBACK_CODE
+#  endif
+#  if !defined(NO_LED_SEND_FEEDBACK_CODE)
+#define NO_LED_SEND_FEEDBACK_CODE
+#  endif
+#endif
+
+#if !defined(IR_FEEDBACK_LED_PIN) && defined(LED_BUILTIN)
+#define IR_FEEDBACK_LED_PIN     LED_BUILTIN
+#endif
 
 /*
+ *  Version 2.3.0 - 3/2026
+ *  - Renamed TinyReceiver*() functions to TinyIRReceiver*().
+ *
+ *  Version 2.2.0 - 7/2024
+ *  - New TinyReceiverDecode() function to be used as drop in for IrReceiver.decode().
+ *
+ *  Version 2.1.0 - 2/2024
+ *  - New sendExtendedNEC() function and new parameter aSendNEC2Repeats.
+ *
+ *  Version 2.0.0 - 10/2023
+ *  - New TinyIRReceiverData which is filled with address, command and flags.
+ *  - Removed parameters address, command and flags from callback handleReceivedTinyIRData() and printTinyReceiverResultMinimal().
+ *  - Callback function now only enabled if USE_CALLBACK_FOR_TINY_RECEIVER is activated.
+ *
  *  Version 1.2.0 - 01/2023
  * - Added ONKYO protocol, NEC with 16 bit address and command, instead of 8 bit + 8 bit parity address and command.
  * - Renamed functions and macros.

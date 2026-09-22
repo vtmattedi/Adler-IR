@@ -64,15 +64,16 @@
  */
 #include <Arduino.h>
 
-#include "PinDefinitionsAndMore.h" // Define macros for input and output pin etc.
+#include "PinDefinitionsAndMore.h" // Define macros for input and output pin etc. Sets FLASHEND and RAMSIZE and evaluates value of SEND_PWM_BY_TIMER.
 
 #if !defined(RAW_BUFFER_LENGTH)
-#  if RAMEND <= 0x4FF || RAMSIZE < 0x4FF
-#define RAW_BUFFER_LENGTH  180  // 750 (600 if we have only 2k RAM) is the value for air condition remotes. Default is 112 if DECODE_MAGIQUEST is enabled, otherwise 100.
-#  elif RAMEND <= 0x8FF || RAMSIZE < 0x8FF
-#define RAW_BUFFER_LENGTH  500  // 750 (600 if we have only 2k RAM) is the value for air condition remotes. Default is 112 if DECODE_MAGIQUEST is enabled, otherwise 100.
+// Use more than the default values of 100 for 512 bytes RAM, 200 for 2k RAM and 750 for more than 2k RAM
+#  if RAMSIZE <= 0x400
+// Here we have 1 k RAM or less
+#define RAW_BUFFER_LENGTH  360
 #  else
-#define RAW_BUFFER_LENGTH  750  // 750 (600 if we have only 2k RAM) is the value for air condition remotes. Default is 112 if DECODE_MAGIQUEST is enabled, otherwise 100.
+// Here we most likely have 2 k RAM or more
+#define RAW_BUFFER_LENGTH  750
 #  endif
 #endif
 
@@ -82,6 +83,8 @@
  */
 #define BAUDRATE 115200
 #define NO_DECODER
+
+//#define NO_LED_FEEDBACK_CODE      // Saves 346 bytes program memory
 
 #include "IRremote.hpp"
 #include <limits.h>
@@ -190,8 +193,7 @@ String Tokenizer::getRest() {
 }
 
 String Tokenizer::getLine() {
-    if (index == invalidIndex)
-        return String("");
+    if (index == invalidIndex) return String("");
 
     int i = payload.indexOf('\n', index);
     String s = (i > 0) ? payload.substring(index, i) : payload.substring(index);
@@ -200,16 +202,13 @@ String Tokenizer::getLine() {
 }
 
 String Tokenizer::getToken() {
-    if (index < 0)
-        return String("");
+    if (index < 0) return String("");
 
     int i = payload.indexOf(' ', index);
     String s = (i > 0) ? payload.substring(index, i) : payload.substring(index);
     index = (i > 0) ? i : invalidIndex;
-    if (index != invalidIndex)
-        if (index != invalidIndex)
-            while (payload.charAt(index) == ' ')
-                index++;
+    if (index != invalidIndex) if (index != invalidIndex) while (payload.charAt(index) == ' ')
+        index++;
     return s;
 }
 
@@ -253,26 +252,23 @@ static inline unsigned hz2khz(frequency_t hz) {
  */
 static void sendRaw(const microseconds_t intro[], unsigned lengthIntro, const microseconds_t repeat[], unsigned lengthRepeat,
         const microseconds_t ending[], unsigned lengthEnding, frequency_t frequency, unsigned times) {
-    if (lengthIntro > 0U)
-        IrSender.sendRaw(intro, lengthIntro, hz2khz(frequency));
-    if (lengthRepeat > 0U)
-        for (unsigned i = 0U; i < times - (lengthIntro > 0U); i++)
-            IrSender.sendRaw(repeat, lengthRepeat, hz2khz(frequency));
-    if (lengthEnding > 0U)
-        IrSender.sendRaw(ending, lengthEnding, hz2khz(frequency));
+    if (lengthIntro > 0U) IrSender.sendRaw(intro, lengthIntro, hz2khz(frequency));
+    if (lengthRepeat > 0U) for (unsigned i = 0U; i < times - (lengthIntro > 0U); i++)
+        IrSender.sendRaw(repeat, lengthRepeat, hz2khz(frequency));
+    if (lengthEnding > 0U) IrSender.sendRaw(ending, lengthEnding, hz2khz(frequency));
 }
 #endif // TRANSMIT
 
 #if defined(RECEIVE)
 
 static void dump(Stream &stream) {
-    unsigned int count = IrReceiver.decodedIRData.rawDataPtr->rawlen;
+    unsigned int count = IrReceiver.irparams.rawlen;
     // If buffer gets full, count = RAW_BUFFER_LENGTH, which is odd,
     // and IrScrutinizer does not like that.
     count &= ~1;
     for (unsigned int i = 1; i < count; i++) {
         stream.write(i & 1 ? '+' : '-');
-        stream.print(IrReceiver.decodedIRData.rawDataPtr->rawbuf[i] * MICROS_PER_TICK, DEC);
+        stream.print(IrReceiver.irparams.rawbuf[i] * MICROS_PER_TICK, DEC);
         stream.print(" ");
     }
     stream.print('-');
@@ -300,8 +296,6 @@ static void receive(Stream &stream) {
  */
 void setup() {
     Serial.begin(BAUDRATE);
-    while (!Serial)
-        ; // wait for serial port to connect.
 
     Serial.println(F(PROGNAME " " VERSION));
     // Just to know which program is running on my Arduino
@@ -317,9 +311,13 @@ void setup() {
 #endif
 
 #if defined(IR_SEND_PIN)
-    IrSender.begin(); // Start with IR_SEND_PIN as send pin and enable feedback LED at default feedback LED pin
+    /*
+     * No IR library setup required :-)
+     * Default is to use IR_SEND_PIN -which is defined in PinDefinitionsAndMore.h- as send pin
+     * and use feedback LED at default feedback LED pin if not disabled by #define NO_LED_SEND_FEEDBACK_CODE
+     */
 #else
-    IrSender.begin(3, ENABLE_LED_FEEDBACK, USE_DEFAULT_FEEDBACK_LED_PIN); // Specify send pin and enable feedback LED at default feedback LED pin
+    IrSender.begin(3); // Specify send pin and enable feedback LED at default feedback LED pin
 #endif
 
 }

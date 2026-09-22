@@ -1,54 +1,100 @@
 #include <Arduino.h>
-#include "NightmareNetwork.h"
-#include <ArduinoJson.h>
-#include <AdlerComponents.h>
+#include <NightMare.h>
 #include <Version.h>
-#ifdef ESP32
-#define IR_SEND_PIN 19  // IR Emitter pin.
-#define ONE_WIRE_BUS 16 // DS18b20 bus pin.
-#define LED_PIN 2       // LED pin. (onboard led is pin 2 on ESP-01S boards).
-#define LDR_PIN 33      // LDR pin (ANALOG).
-#endif
+#include <board.h>
+#include <Board/BoardInfo.h>
+#include <TempSensor/TempSensor.h>
+#include <IrController/IrController.h>
+#include <AcController/AcController.h>
+#include <NightMare/NetResources.h>
+#include <LittleFS.h>
+// Adler: the air-conditioner controller.
+//   sensors     DS18B20 (local), the IR receiver (local), the door (another device, over MQTT)
+//   actuator    the IR transmitter
 
-NightMareResults localHandleNightMareCommand(String command)
+// ---- the resolver -------------------------------------------------------------------
+
+NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
 {
+    if (gAc.handles(message.command))
+    {
+        NightMareResults result = gAc.command(message);
+        syncAcResources();
+        return result;
+    }
+
     NightMareResults res;
     res.result = false;
-    res.response = "not implement";
+    res.response = "not implemented";
+#if defined(BOARD_C6_V1)
+    if (message.command == "RGB")
+    {
+        unsigned long color = 0;
+        if (message.argc > 0)
+        {
+            color = strtoul(message.args[0].c_str(), nullptr, 16);
+            rgbLedColor.setValue(color);
+            res.result = true;
+            res.response = "RGB LED color set to: " + String(color, HEX);
+        }
+        else
+        {
+            color = rgbLedColor.getValue();
+            res.result = true;
+            res.response = "RGB LED current color: " + String(color, HEX);
+        }
+    }
+    else
+#endif
+    {
+        Serial.printf("Command received: %s\n", message.command.c_str());
+    }
     return res;
 }
 
-String getSystemInfo()
-{
-
-    return "{}";
-}
-
-void onWifiConnected(bool firstConnection)
-{
-    Serial.println("WiFi Connected!");
-    if (firstConnection)
-        MQTT_Init(REMOTE_MQTT);
-}
+// ---- lifecycle -------------------------------------------------------------------------
 
 void setup()
 {
-    Config.clear(); 
-    Serial.begin(115200);
-    Serial.println(DEVICE_NAME);
-    Serial.printf("\tFirmware Version: %s\n", VERSION);
-    Serial.printf("\tBuild Date: %s\n", BUILD_TIMESTAMP);
-    Serial.println("Starting NightMare Network...");
-    WiFi_onConnected(onWifiConnected);
-    WiFi_Auto();
+    introNightMareESP();
+    printBoardInfo();
+
+    setCommandResolver(localHandleNightMareCommand);
+    gAc.begin(temperatureSensor, doorSensor);
+    if (!bindResources())
+        Serial.println("Adler: one or more NightMare resources failed to bind");
+    syncAcResources();
+#if BOARD_HAS_DS18B20
+    setupTempSensor();
+#endif
     startIrServices();
-    startSensors();
-    startAcService();
+    startNightMareESP();
+#if defined(BOARD_C6_V1)
+    pinMode(PIN_BUTTON, INPUT_PULLUP);
+
+#endif
 }
 
 void loop()
 {
-    Timers.run();
-    scheduler.run();
-    NightMareCommand_SerialResolver(&Serial, '\n');
+    gAc.loop();
+    syncAcResources();
+    pumpIrServices();
+    tickNightMareESP();
+#if defined(BOARD_C6_V1)
+    static bool val = digitalRead(PIN_BUTTON);
+    if (val != digitalRead(PIN_BUTTON))
+    {
+        if (val)
+        {
+            LOG("Button", "pressed");
+            gAc.setPower(!acIrState.state.power);
+            syncAcResources();
+        }
+        else
+            LOG("Button", "released");
+
+        val = !val;
+    };
+#endif
 }
