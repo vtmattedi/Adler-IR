@@ -1,82 +1,102 @@
 {
     "actions": [
         {
-            "name": "ir_send",
-            "description": "Send an IR command.",
+            "name": "irsend",
+            "role": "managed",
+            "description": "Queue a known IR command for transmission.",
             "parameters": [
                 {
                     "name": "code",
                     "type": "string",
-                    "description": "The IR code to send, in hexadecimal format."
+                    "description": "A known command name such as POWER, or its hexadecimal code."
                 }
             ]
         },
         {
-            "name": "ir_learn",
-            "description": "Learn an IR command and return its code.",
-            "parameters": []
-        },
-        {
-            "name": "ac_set_power",
-            "description": "Turn on/turn off the AC unit.",
+            "name": "ac_manual_sync",
+            "role": "managed",
+            "description": "Synchronize Adler's AC belief with the physical unit without transmitting IR.",
             "parameters": [
-                {
-                    "name": "power",
-                    "type": "int",
-                    "description": "1 for ON, 0 for OFF. 2 for toggle."
-                }
+                { "name": "power", "type": "boolean" },
+                { "name": "temperature", "type": "integer" }
             ]
         },
         {
-            "name": "ac_set_mode",
-            "description": "Set the AC mode.",
+            "name": "ac_sleep",
+            "role": "managed",
+            "description": "Turn the AC off after a number of minutes; zero cancels the timer.",
             "parameters": [
-                {
-                    "name": "mode",
-                    "type": "int",
-                    "description": "0 for Auto, 1 for Cool, 2 for Dry, 3 for Fan, 4 for Heat."
-                }
+                { "name": "minutes", "type": "integer" }
             ]
         },
         {
-            "name": "ac_set_temperature",
-            "description": "Set the AC temperature.",
+            "name": "ac_morning_off",
+            "role": "managed",
+            "description": "Run the morning shutdown immediately, optionally overriding sleep-in.",
             "parameters": [
-                {
-                    "name": "temperature",
-                    "type": "int",
-                    "description": "The target temperature in Celsius (18-30)."
-                }
-            ]
-        },
-        {
-            "name": "ac_set_target_temperature",
-            "description": "Set the AC target temperature.",
-            "parameters": [
-                {
-                    "name": "temperature",
-                    "type": "float",
-                    "description": "The target temperature in Celsius (18-30)."
-                }
-            ]
-        },
-        {
-            "name": "ac_set_target",
-            "description": "turns on/off the controlling the room temperature.",
-            "parameters": [
-                {
-                    "name": "state",
-                    "type": "int",
-                    "description": "1 for ON, 0 for OFF."
-                }
+                { "name": "force", "type": "boolean", "required": false }
             ]
         }
     ],
     "sensors": [
         {
             "name": "temperature",
-            "description": "Current temperature in Celsius.",
+            "role": "managed",
+            "description": "Current DS18B20 temperature in Celsius.",
             "type": "float"
+        },
+        {
+            "name": "irrecv",
+            "role": "managed",
+            "description": "Name of the last IR command received.",
+            "type": "string"
+        },
+        {
+            "name": "door",
+            "role": "remote",
+            "description": "Door-open state supplied by another NightMare device.",
+            "type": "boolean"
+        },
+        {
+            "name": "ac_status",
+            "role": "managed",
+            "description": "Complete AC controller state as a compatibility JSON document.",
+            "type": "string"
+        },
+        {
+            "name": "ac_state",
+            "role": "managed",
+            "description": "Controller state: unknown, off/on, target-controlled, or door-paused.",
+            "type": "integer"
+        },
+        {
+            "name": "ac_known",
+            "role": "managed",
+            "description": "Whether Adler's AC belief has been synchronized with the physical unit.",
+            "type": "boolean"
+        },
+        {
+            "name": "ac_door_state",
+            "role": "managed",
+            "description": "Door-control state bitmask.",
+            "type": "integer"
+        },
+        {
+            "name": "ac_sleep_deadline",
+            "role": "managed",
+            "description": "Sleep shutdown Unix timestamp, or zero if inactive or wall time is unavailable.",
+            "type": "integer"
         }
+    ],
+    "states": [
+        { "name": "ac_power", "type": "boolean", "description": "Requested AC power state." },
+        { "name": "ac_temperature", "type": "integer", "description": "Temperature shown on the AC unit, 18-30 C." },
+        { "name": "ac_target", "type": "float", "description": "Thermostat target; a negative value disables thermostat control." },
+        { "name": "ac_sleep_in", "type": "boolean", "description": "Skip the normal morning shutdown once." },
+        { "name": "ac_door_paused", "type": "boolean", "description": "Temporarily ignore automatic door control." },
+        { "name": "ac_mode", "type": "integer", "description": "AC mode: 0 cool, 1 ventilator, 2 humidifier." },
+        { "name": "ac_fan", "type": "integer", "description": "Fan setting: 0 low or 1 high." },
+        { "name": "ac_turbo", "type": "boolean", "description": "Turbo setting." },
+        { "name": "ac_led", "type": "boolean", "description": "AC display LED setting." }
     ]
 }

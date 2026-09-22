@@ -23,10 +23,29 @@ struct BoardConnection
 };
 
 static constexpr BoardConnection kBoardConnections[] = {
+#if BOARD_HAS_IR_RECEIVER
     {PIN_IR_RECEIVE, "IR RX demodulator", "idles HIGH, pulls low on carrier"},
+#endif
     {PIN_IR_LED, "IR TX LED", "38 kHz carrier from LEDC"},
     {PIN_ONBOARD_LED, "Status LED", "polarity unverified"},
+#if BOARD_HAS_DS18B20
     {PIN_ONE_WIRE, "DS18B20", "OneWire data, 4k7 pull-up to 3V3"},
+#endif
+#if defined(PIN_BUTTON)
+    {PIN_BUTTON, "Button", "onboard button, active LOW"},
+#endif
+#if defined(PIN_RGB_DATA)
+    {PIN_RGB_DATA, "RGB LED", "onboard WS2812 data"},
+#endif
+#if defined(PIN_RGB_POWER)
+    {PIN_RGB_POWER, "RGB power", "drive HIGH to enable WS2812"},
+#endif
+#if defined(PIN_IO_1)
+    {PIN_IO_1, "Grove GPIO", "HY2.0-4P white wire"},
+#endif
+#if defined(PIN_IO_2)
+    {PIN_IO_2, "Grove GPIO", "HY2.0-4P yellow wire"},
+#endif
 };
 
 static constexpr size_t kBoardConnectionCount =

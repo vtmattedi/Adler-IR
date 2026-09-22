@@ -22,7 +22,19 @@
       "Bash(mkdir -p /tmp/newctx)",
       "Bash(cp website/nginx.conf /tmp/newctx/)",
       "Bash(docker build *)",
-      "Bash(docker rmi *)"
+      "Bash(docker rmi *)",
+      "Bash(timeout 180 pio run -e esp32c3-supermini)",
+      "Bash(find \"/d/NightMareSystems/ESP32/Adler\" -iname \"*.csv\" 2>/dev/null | grep -iv node_modules; find / -iname \"min_spiffs.csv\" 2>/dev/null | head -5)",
+      "Read(//d//**)",
+      "WebFetch(domain:dev.to)",
+      "Bash(mkdir -p \"/c/Users/Vity1/AppData/Local/Temp/claude/d--nightmaresystems-esp32-adler/65cf4b04-db57-4be6-9b7c-229c05d82a54/scratchpad/nmtest/shim/NightMare\" \"/c/Users/Vity1/AppData/Local/Temp/claude/d--nightmaresystems-esp32-adler/65cf4b04-db57-4be6-9b7c-229c05d82a54/scratchpad/nmtest/shim/Core\" && ls /c/Users/Vity1/.platformio/packages/toolchain-xtensa-esp-elf/bin/ | head)",
+      "Bash(rm shim/Core/DeviceIdentity.h)",
+      "Bash(rmdir shim/Core)",
+      "Bash(awk '/struct ActionArgMetadata/{f=1} f{print NR\": \"$0}' NetResources.h)",
+      "Bash(awk '/^bool StateStore::\\(set|remove|save\\)\\\\\\(/{f=1} f{print NR\": \"$0} /^}/{if\\(f\\){f=0; print \"---\"}}' StateStore.cpp)",
+      "Bash(awk '/^bool MQTT_Publish\\\\\\(/{f=1} f{print NR\": \"$0} /^}/{if\\(f\\){f=0}}' MQTT.cpp)",
+      "Bash(awk '/^bool ResourcesManager::applyOtherDeviceManifest/{f=1} f{print NR\": \"$0} /^}/{if\\(f\\){f=0}}' ResourcesManager.cpp)",
+      "Bash(awk '/executeJobCommand\\\\\\(const NightMareMessage/{f=1} f{print NR\": \"$0} /^}/{if\\(f\\){f=0}}' NightMareComand.cpp)"
     ],
     "additionalDirectories": [
       "D:\\NightMareSystems\\ESP32",
@@ -33,7 +45,13 @@
       "D:\\NightMareSystems\\ESP32\\nightmarenetwork\\mcp\\src",
       "D:\\NightMareSystems\\ESP32\\nightmarenetwork",
       "D:\\NightMareSystems\\ESP32\\nightmarenetwork\\website\\src\\components",
-      "D:\\NightMareSystems\\ESP32\\nightmarenetwork\\mcp"
+      "D:\\NightMareSystems\\ESP32\\nightmarenetwork\\mcp",
+      "D:\\NightMareSystems\\ESP32\\Adler\\.pio\\libdeps\\esp32c3-supermini\\NightMareNetwork\\src\\Core",
+      "D:\\NightMareSystems\\ESP32\\Adler\\.pio\\libdeps\\esp32c3-supermini\\NightMareNetwork\\src\\Plataform\\ESP32",
+      "D:\\NightMareSystems\\ESP32\\Adler",
+      "C:\\Users\\Vity1\\AppData\\Local\\Temp\\claude\\d--nightmaresystems-esp32-adler\\65cf4b04-db57-4be6-9b7c-229c05d82a54\\scratchpad\\nmtest\\shim",
+      "D:\\NightMareSystems\\ESP32\\Adler\\.pio\\libdeps\\esp32c3-supermini\\NightMareNetwork\\src\\NightMare",
+      "D:\\NightMareSystems\\ESP32\\Adler\\.pio\\libdeps\\esp32c3-supermini\\NightMareNetwork\\src\\Network"
     ]
   }
 }

@@ -47,6 +47,8 @@
 #define ONBOARD_LED_ON HIGH 
 #define ONBOARD_LED_OFF LOW
 #define PIN_ONE_WIRE 10 // DS18B20 data line
+#define BOARD_HAS_IR_RECEIVER 1
+#define BOARD_HAS_DS18B20 1
 
 // GPIO 11-17 are bonded to the SPI flash and 18/19 carry the USB console.
 #define BOARD_GPIO_MAX 21
@@ -62,9 +64,9 @@
  * shares it with that LED and its series resistor. */
 
 /* =====================================================================
- * BOARD_C6_V1 -- M5Stack NanoC6, built against esp32-c6-devkitc-1.
- * ARCHIVED: kept as the record of how that unit was wired. It had no IR
- * receiver and no DS18B20, so this firmware cannot target it.
+ * BOARD_C6_V1 -- M5Stack NanoC6, built against esp32-c6-devkitm-1.
+ * Uses only the connections built into the board. There is no IR receiver or
+ * DS18B20, but its onboard IR transmitter is fully supported.
  * ===================================================================== */
 #elif defined(BOARD_C6_V1)
 
@@ -79,13 +81,14 @@
 #define PIN_RGB_POWER 19 // WS2812 power enable, drive HIGH to power it
 #define PIN_IO_1 1       // broken out, unused
 #define PIN_IO_2 2       // broken out, unused
+#define BOARD_HAS_IR_RECEIVER 0
+#define BOARD_HAS_DS18B20 0
 
 // GPIO 12/13 carry the USB console, 24-30 are the SPI flash.
 #define BOARD_GPIO_MAX 30
 #define BOARD_GPIO_IS_RESERVED(g) (((g) >= 12 && (g) <= 13) || ((g) >= 24 && (g) <= 30))
 
-// No PIN_IR_RECEIVE and no PIN_ONE_WIRE: neither was ever fitted on this unit.
-#error "BOARD_C6_V1 is an archived wiring record, not a buildable target: the NanoC6 had no IR receiver or DS18B20."
+// No PIN_IR_RECEIVE and no PIN_ONE_WIRE: neither is fitted on this board.
 
 /* =====================================================================
  * BOARD_ESP32_V1 -- original classic ESP32, esp32doit-devkit-v1.
@@ -101,6 +104,8 @@
 #define ONBOARD_LED_ON HIGH
 #define ONBOARD_LED_OFF LOW
 #define PIN_ONE_WIRE 16 // DS18B20 data line
+#define BOARD_HAS_IR_RECEIVER 1
+#define BOARD_HAS_DS18B20 1
 
 /* Pins this firmware no longer drives, recorded so the wiring is not lost.
  * Note PIN_PZEM_RX collides with PIN_IR_RECEIVE on 23: that collision was

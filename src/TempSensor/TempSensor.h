@@ -1,7 +1,8 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <board.h>
+
+#if BOARD_HAS_DS18B20
 
 /// 1-Wire data pin for the DS18B20. The bus needs an external 4.7k pull-up to 3.3V: the ESP32
 /// internal one (~45k) is too weak for it. Most 3-pin breakout modules already carry the resistor;
@@ -40,12 +41,10 @@ float currentTemperature();
 /// mix values from before and after one of the task's updates.
 TempSensorStatus tempSensorStatus();
 
-/// @brief This sensor's field in the readings object: `temperature`, null while unknown.
-void tempSensorReport(JsonObject into);
-/// @brief This sensor's entry in the declaration: what the backend reads, plus the hardware details.
-void tempSensorInfo(JsonObject into);
-
 /// @brief Debug probe: brings up a throwaway OneWire bus on an arbitrary pin, looks for a DS18B20
 /// and reads it, without disturbing the configured sensor. Meant for finding which pin a sensor is
 /// actually on. Blocks for the conversion (~750 ms), so it is a console command, not a poll.
 String Ds18ProbeJson(uint8_t pin);
+
+#endif // BOARD_HAS_DS18B20
+

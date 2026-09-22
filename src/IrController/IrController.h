@@ -1,15 +1,16 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <NightMareNetwork.h>
+#include <NightMare.h>
 #include <board.h>
 
-// The IR side of Adler is two things on one pair of pins:
+// The IR side of Adler always provides transmission:
 //   an actuator -- codes queued by sendIRCode() and transmitted by a pump. Codes are
 //   generic: the table knows each one's protocol. The AC's own codes also advance
 //   the state the AC unit is believed to be in (AcIrStateController) as they are queued;
-//   a sensor    -- whatever the demodulator hears, decoded on its own task and handed
-//   to the network as the `ir` reading, whichever remote it came from.
+#if BOARD_HAS_IR_RECEIVER
+// Boards with a demodulator also provide a sensor -- whatever it hears is decoded and handed
+//   to the network through the managed `irrecv` sensor, whichever remote it came from.
+#endif
 
 #define MIN_AC_TEMP 18
 #define MAX_AC_TEMP 30
@@ -31,7 +32,9 @@
 // and quietly ignore the pin handed to IrSender.begin(). IR_RECEIVE_PIN carries
 // no such meaning for IrReceiver, but is kept symmetrical with it.
 constexpr uint8_t IR_SEND_PIN = PIN_IR_LED;
+#if BOARD_HAS_IR_RECEIVER
 constexpr uint8_t IR_RECEIVE_PIN = PIN_IR_RECEIVE;
+#endif
 
 /// @brief Every IR code this device knows, across remotes. The table in IrController.cpp
 /// pairs each with its wire name and protocol.
@@ -118,12 +121,12 @@ public:
 
     AcIrStateController();
     /// @brief Turns the unit on or off by queueing AC_POWER when the belief differs.
-    void setPower(bool state);
+    bool setPower(bool state);
     /// @brief Walks the unit to a temperature by queueing every PLUS/MINUS step at once.
     /// Returns immediately; the pump transmits them IR_SEND_INTERVAL_MS apart. A unit that is
     /// off is turned on first and back off after, so the temperature lands where asked.
-    void setTemp(uint8_t temp);
-    void setMode(AcIrMode mode);
+    bool setTemp(uint8_t temp);
+    bool setMode(AcIrMode mode);
     /// @brief Advances the believed state as if `code` had been acted on by the unit.
     /// A code that is not the AC's is a no-op.
     void nextState(IrCodes code);
@@ -145,11 +148,11 @@ bool sendIRCode(uint32_t code);
 /// @brief Pin assignment, debug flag, pending queue depth and the AC belief as JSON.
 String IrInfoJson();
 void startIrServices();
-/// @brief The transmitter's entry in the descriptor's `actuators` block.
-void irActuatorInfo(JsonObject into);
+void pumpIrServices();
 
 // ---- the receiver as a sensor ------------------------------------------
 
+#if BOARD_HAS_IR_RECEIVER
 /// @brief What the receiver last decoded, as of one instant.
 struct IrSensorStatus
 {
@@ -157,15 +160,8 @@ struct IrSensorStatus
     uint32_t code;          ///< Raw code of the last frame.
     char name[24];          ///< getIrName() of it, or "<PROTOCOL>:0x<raw>" for a remote that is not ours.
     uint32_t lastReceiveMs; ///< millis() of the last frame; 0 if never.
-    bool pendingPublish;    ///< A frame arrived that the network has not been told about.
 };
 
 /// @brief Snapshot of the last received frame, copied under lock.
 IrSensorStatus irSensorStatus();
-/// @brief Clears the pending-publish flag. Called by whoever publishes the reading.
-void irSensorMarkPublished();
-/// @brief This sensor's field in the readings object: `ir`, the last decoded code by name,
-/// "<PROTOCOL>:0x<raw>" for a remote that is not in the table, or null if nothing was heard.
-void irSensorReport(JsonObject into);
-/// @brief This sensor's entry in the declaration.
-void irSensorInfo(JsonObject into);
+#endif

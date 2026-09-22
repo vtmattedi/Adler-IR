@@ -1,5 +1,9 @@
 #include "TempSensor.h"
-#include <NightMareNetwork.h>
+
+#if BOARD_HAS_DS18B20
+
+#include <NightMare.h>
+#include <NightMare/NetResources.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
@@ -94,6 +98,8 @@ static void readSensor()
     sensorStatus.tempC = t;
     sensorStatus.lastReadMs = readMs;
     portEXIT_CRITICAL(&statusLock);
+
+    temperatureSensor.setValue(t);
 }
 
 static void tempSensorTask(void *)
@@ -103,7 +109,7 @@ static void tempSensorTask(void *)
         uint32_t startMs = millis();
         // Sit out an OTA: every 1-Wire bit slot runs with interrupts masked, and an upload
         // stalling behind them fails.
-        if (!SystemSettings.getFlag("ota_running"))
+        if (!SystemState.getFlag("ota_running"))
         {
             if (!sensorFound)
                 sensorFound = findSensor();
@@ -144,34 +150,6 @@ TempSensorStatus tempSensorStatus()
 float currentTemperature()
 {
     return tempSensorStatus().tempC;
-}
-
-void tempSensorReport(JsonObject into)
-{
-    // NAN serialises as null, which the backend stores as "no reading" rather than zero.
-    into["temperature"] = currentTemperature();
-}
-
-void tempSensorInfo(JsonObject into)
-{
-    TempSensorStatus s = tempSensorStatus();
-    JsonObject t = into.createNestedObject("temperature");
-    // The five the backend reads. `id` must equal the key the reading is published under.
-    t["id"] = "temperature";
-    t["label"] = "Room temperature";
-    t["unit"] = "\xC2\xB0" "C";
-    t["type"] = "float";
-    t["disable"] = false;
-    t["critical"] = false;
-    // The rest is for people and for the Dashboard.
-    t["hardware"] = "DS18B20";
-    t["pin"] = DS18B20_PIN;
-    t["connected"] = s.connected;
-    t["address"] = s.address;
-    t["parasite"] = s.parasite;
-    t["value"] = s.tempC;
-    if (s.lastReadMs)
-        t["age_ms"] = millis() - s.lastReadMs;
 }
 
 String Ds18ProbeJson(uint8_t pin)
@@ -218,3 +196,5 @@ String Ds18ProbeJson(uint8_t pin)
     json += "}";
     return json;
 }
+
+#endif // BOARD_HAS_DS18B20
