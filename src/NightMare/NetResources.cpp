@@ -3,7 +3,23 @@
 #include <ArduinoJson.h>
 #include <NightMare.h>
 #include <IrController/IrController.h>
-
+String formatString(const char *format, ...)
+{
+    // Create a buffer to store the formatted string
+    char buffer[1024]; // You can adjust the size as needed
+    va_list args;
+    va_start(args, format);
+    // Format the string into the buffer
+    int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (len < 0)
+    {
+        // Error occurred during formatting
+        return String();
+    }
+    // Convert the formatted buffer to a String
+    return String(buffer);
+}
 namespace
 {
     const ActionArgMetadata kIrSendArguments[] = {
@@ -79,12 +95,30 @@ namespace
     {
         DynamicJsonDocument doc(192);
         if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
-            return {false, "expected {\"power\":true,\"temperature\":24}"};
+        {
+            // we try to get payload as human-readable string: <power> <temperature>
+            String powerStr;
+            String temperatureStr;
+            int spaceIndex = payload.indexOf(' ');
+            int temp = 0;
+            if (spaceIndex >= 0)
+            {
+                powerStr = payload.substring(0, spaceIndex);
+                temperatureStr = payload.substring(spaceIndex + 1);
+                temp = temperatureStr.toInt();
+            }
+            bool isOk = powerStr.length() > 0 && temperatureStr.length() > 0 && spaceIndex > 0 && temp >0;
+            if (!isOk)
+                return {false, "deserializeJson failed or payload is not a JSON object; expected {\"power\":bool,\"temperature\":int} got: " + payload};
+            doc = DynamicJsonDocument(192);
+            doc["power"] = powerStr == "1" || powerStr.equalsIgnoreCase("true");
+            doc["temperature"] = temp;
+        }
 
         JsonVariantConst power = doc["power"];
         JsonVariantConst temperature = doc["temperature"];
         if (!power.is<bool>() || !temperature.is<int>())
-            return {false, "'power' must be boolean and 'temperature' must be an integer"};
+            return {false, formatString("'power' (%s) must be boolean and 'temperature' (%s) must be an integer", power.as<String>().c_str(), temperature.as<String>().c_str())};
         if (!gAc.manualSync(power.as<bool>(), temperature.as<int>()))
             return {false, "temperature must be between 18 and 30"};
 
