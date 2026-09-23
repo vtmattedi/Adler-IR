@@ -231,7 +231,7 @@ void AcIrStateController::printState()
 
 String AcIrStateController::toJson()
 {
-    DynamicJsonDocument doc(256);
+    JsonDocument doc;
     doc["power"] = state.power;
     doc["temp"] = state.temp;
     doc["mode"] = state.mode;

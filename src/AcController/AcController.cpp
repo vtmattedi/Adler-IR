@@ -382,7 +382,7 @@ uint8_t AcController::doorState() const
 
 String AcController::stateJson() const
 {
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     const int temperature = acIrState.state.temp;
     doc["AcState"] = static_cast<int>(state());
     doc["DoorState"] = doorState();
@@ -413,7 +413,7 @@ void AcController::info(JsonObject into) const
     into["target"] = target_;
     into["sleepIn"] = sleepIn_;
     into["sleepDeadline"] = sleepDeadlineEpoch_;
-    JsonObject config = into.createNestedObject("config");
+    JsonObject config = into["config"].to<JsonObject>();
     config["hysteresis"] = hysteresis_;
     config["inputStaleMs"] = inputStaleMs_;
     config["doorPauseSeconds"] = doorSecsToPause_;
@@ -502,7 +502,7 @@ NightMareResults AcController::command(const NightMareMessage &message)
         return success(stateJson());
     if (message.subcommand == "INFO")
     {
-        DynamicJsonDocument doc(768);
+        JsonDocument doc;
         info(doc.to<JsonObject>());
         String output;
         serializeJson(doc, output);

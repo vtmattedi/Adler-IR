@@ -73,7 +73,7 @@ namespace
 
     ActionResult invokeIrSend(ManagedAction &, const String &payload)
     {
-        DynamicJsonDocument doc(192);
+        JsonDocument doc;
         if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
             return {false, "expected {\"code\":\"POWER\"}"};
 
@@ -93,7 +93,7 @@ namespace
 
     ActionResult invokeAcManualSync(ManagedAction &, const String &payload)
     {
-        DynamicJsonDocument doc(192);
+        JsonDocument doc;
         if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
         {
             // we try to get payload as human-readable string: <power> <temperature>
@@ -110,7 +110,7 @@ namespace
             bool isOk = powerStr.length() > 0 && temperatureStr.length() > 0 && spaceIndex > 0 && temp >0;
             if (!isOk)
                 return {false, "deserializeJson failed or payload is not a JSON object; expected {\"power\":bool,\"temperature\":int} got: " + payload};
-            doc = DynamicJsonDocument(192);
+            doc.clear();
             doc["power"] = powerStr == "1" || powerStr.equalsIgnoreCase("true");
             doc["temperature"] = temp;
         }
@@ -128,7 +128,7 @@ namespace
 
     ActionResult invokeAcSleep(ManagedAction &, const String &payload)
     {
-        DynamicJsonDocument doc(128);
+        JsonDocument doc;
         if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
             return {false, "expected {\"minutes\":30}"};
 
@@ -145,7 +145,7 @@ namespace
         bool force = false;
         if (!payload.isEmpty())
         {
-            DynamicJsonDocument doc(96);
+            JsonDocument doc;
             if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
                 return {false, "expected an empty payload or {\"force\":true}"};
             JsonVariantConst requested = doc["force"];
@@ -226,7 +226,7 @@ ManagedAction setTemperatureExternalSensor("set_temperature_sensor", kSetTempera
 RemoteSensor<float> temperatureSensor;
 ActionResult handleSetTemperatureSensor(ManagedAction &, const String &payload)
 {
-    DynamicJsonDocument doc(192);
+    JsonDocument doc;
     if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
     {
         LOG("NetResources", "set_temperature_sensor: expected {\"owner\":\"device\",\"name\":\"resource\"}");

@@ -69,6 +69,40 @@ void setup()
 #endif
     startIrServices();
     startNightMareESP();
+
+    const TelemetryResult hw =
+        Telemetry.getHardware(HardwareFormat::MSGPACK);
+
+    Serial.printf("MPACK len=%u\n", hw.data.length());
+
+    for (size_t i = 0; i < hw.data.length(); ++i)
+    {
+        Serial.printf("%02X", (uint8_t)hw.data[i]);
+
+        if ((i + 1) % 32 == 0)
+            Serial.println();
+    }
+
+    Serial.println();
+
+    JsonDocument verify;
+    DeserializationError err = deserializeMsgPack(
+        verify,
+        hw.data.c_str(),
+        hw.data.length());
+
+    if (err)
+    {
+        Serial.printf(
+            "LOCAL MSGPACK DECODE FAILED: %s\n",
+            err.c_str());
+    }
+    else
+    {
+        Serial.println("LOCAL MSGPACK DECODE OK:");
+        serializeJsonPretty(verify, Serial);
+        Serial.println();
+    }
 #if defined(BOARD_C6_V1)
     pinMode(PIN_BUTTON, INPUT_PULLUP);
 
