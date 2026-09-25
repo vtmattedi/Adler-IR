@@ -107,7 +107,7 @@ namespace
                 temperatureStr = payload.substring(spaceIndex + 1);
                 temp = temperatureStr.toInt();
             }
-            bool isOk = powerStr.length() > 0 && temperatureStr.length() > 0 && spaceIndex > 0 && temp >0;
+            bool isOk = powerStr.length() > 0 && temperatureStr.length() > 0 && spaceIndex > 0 && temp > 0;
             if (!isOk)
                 return {false, "deserializeJson failed or payload is not a JSON object; expected {\"power\":bool,\"temperature\":int} got: " + payload};
             doc.clear();
@@ -215,15 +215,16 @@ namespace
     }
 }
 
-#if BOARD_HAS_DS18B20
 ManagedSensor<float> temperatureSensor("temperature");
+#if BOARD_HAS_DS18B20
 #else
 const ActionArgMetadata kSetTemperatureSensorArguments[] = {
     {"owner", NetValueType::STRING},
     {"name", NetValueType::STRING},
 };
 ManagedAction setTemperatureExternalSensor("set_temperature_sensor", kSetTemperatureSensorArguments);
-RemoteSensor<float> temperatureSensor;
+RemoteSensor<float> externalTemperatureSensor;
+
 ActionResult handleSetTemperatureSensor(ManagedAction &, const String &payload)
 {
     JsonDocument doc;
@@ -245,7 +246,7 @@ ActionResult handleSetTemperatureSensor(ManagedAction &, const String &payload)
     const String name = nameValue.as<String>();
     PersistentSettings.set("temperature_sensor_owner", owner);
     PersistentSettings.set("temperature_sensor_name", name);
-    temperatureSensor.setSource(owner, name);
+    externalTemperatureSensor.setSource(owner, name);
     return {true, String("configured temperature sensor: ") + owner + "/" + name};
 }
 
@@ -336,8 +337,13 @@ bool bindResources()
     const String tempSensorResource = PersistentSettings.get(
         "temperature_sensor_name", PersistentSettings.get("temperature_sensor_resource", ""));
     if (!tempSensorOwner.isEmpty() && !tempSensorResource.isEmpty())
-        temperatureSensor.setSource(tempSensorOwner, tempSensorResource);
+        externalTemperatureSensor.setSource(tempSensorOwner, tempSensorResource);
+    externalTemperatureSensor.onUpdate = [](NetValue<float> &, const float &value)
+    {
+        temperatureSensor.setValue(value);
+    };
     ok = bind(setTemperatureExternalSensor) && ok;
+    ok = bind(externalTemperatureSensor) && ok;
     ok = bind(temperatureSensor) && ok;
 #endif
 #if BOARD_HAS_IR_RECEIVER

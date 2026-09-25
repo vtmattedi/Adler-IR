@@ -3,6 +3,8 @@
 #include <math.h>
 #if BOARD_HAS_DS18B20
 #include <TempSensor/TempSensor.h>
+#else
+#include <NightMare/NetResources.h>
 #endif
 
 namespace
@@ -34,11 +36,7 @@ void ensureSetting(const String &key, const String &value)
 
 AcController gAc;
 
-#if BOARD_HAS_DS18B20
 void AcController::begin(ManagedSensor<float> &temperature, RemoteSensor<bool> &door)
-#else
-void AcController::begin(RemoteSensor<float> &temperature, RemoteSensor<bool> &door)
-#endif
 {
     temperature_ = &temperature;
     door_ = &door;
@@ -111,7 +109,8 @@ bool AcController::currentTemperature(float &temperature) const
         return false;
     temperature = status.tempC;
 #else
-    if (temperature_ == nullptr || !temperature_->hasValue() || temperature_->isStale())
+    if (temperature_ == nullptr || !externalTemperatureSensor.hasValue() ||
+        externalTemperatureSensor.isStale())
         return false;
     temperature = temperature_->getValue();
 #endif
@@ -211,7 +210,8 @@ bool AcController::scheduleMorningOff(bool forced)
 
 void AcController::ensureScheduledTasks()
 {
-    if (tasksEnsured_ || !NightMare::Time::valid() || !SystemState.getFlag("time_synced"))
+    if (tasksEnsured_ || !NightMare::Time::valid() ||
+        !SystemState.get(SystemFlag::TimeSynced))
         return;
     gScheduler.remove(MorningOffJob);
     gScheduler.remove(SleepInOffJob);

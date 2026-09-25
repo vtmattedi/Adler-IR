@@ -14,11 +14,11 @@
 
 // Adler's resource model. These objects have static storage because the
 // ResourcesManager keeps non-owning pointers to them for the life of the device.
-#if BOARD_HAS_DS18B20
 extern ManagedSensor<float> temperatureSensor;
+#if BOARD_HAS_DS18B20
 #else
 extern ManagedAction setTemperatureExternalSensor;
-extern RemoteSensor<float> temperatureSensor;
+extern RemoteSensor<float> externalTemperatureSensor;
 #endif
 
 #if BOARD_HAS_IR_RECEIVER

@@ -109,7 +109,7 @@ static void tempSensorTask(void *)
         uint32_t startMs = millis();
         // Sit out an OTA: every 1-Wire bit slot runs with interrupts masked, and an upload
         // stalling behind them fails.
-        if (!SystemState.getFlag("ota_running"))
+        if (!SystemState.get(SystemFlag::OtaRunning))
         {
             if (!sensorFound)
                 sensorFound = findSensor();

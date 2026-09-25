@@ -25,11 +25,7 @@ enum AcControllerState : int8_t
 class AcController
 {
 public:
-#if BOARD_HAS_DS18B20
     void begin(ManagedSensor<float> &temperature, RemoteSensor<bool> &door);
-#else
-    void begin(RemoteSensor<float> &temperature, RemoteSensor<bool> &door);
-#endif
     void loop();
     void reloadConfig();
 
@@ -60,11 +56,7 @@ public:
     NightMareResults command(const NightMareMessage &message);
 
 private:
-#if BOARD_HAS_DS18B20
     ManagedSensor<float> *temperature_ = nullptr;
-#else
-    RemoteSensor<float> *temperature_ = nullptr;
-#endif
     RemoteSensor<bool> *door_ = nullptr;
 
     float hysteresis_ = AC_DEFAULT_HYSTERESIS;
