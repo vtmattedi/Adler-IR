@@ -1,9 +1,10 @@
-#include "NetResources.h"
+#include "AcResources.h"
 
 #include <ArduinoJson.h>
 #include <NightMare.h>
 #include <IrController/IrController.h>
-String formatString(const char *format, ...)
+
+static String formatArgs(const char *format, ...)
 {
     // Create a buffer to store the formatted string
     char buffer[1024]; // You can adjust the size as needed
@@ -22,9 +23,6 @@ String formatString(const char *format, ...)
 }
 namespace
 {
-    const ActionArgMetadata kIrSendArguments[] = {
-        {"code", NetValueType::STRING},
-    };
     const ActionArgMetadata kAcManualSyncArguments[] = {
         {"power", NetValueType::BOOLEAN},
         {"temperature", NetValueType::INTEGER},
@@ -41,54 +39,6 @@ namespace
     {
         if (force || !(resource.getValue() == value))
             resource.setValue(value);
-    }
-
-    bool parseHexCode(const String &text, uint32_t &code)
-    {
-        String candidate = text;
-        candidate.trim();
-        if (candidate.startsWith("0x") || candidate.startsWith("0X"))
-            candidate.remove(0, 2);
-        if (candidate.length() == 0 || candidate.length() > 8)
-            return false;
-
-        uint32_t parsed = 0;
-        for (size_t i = 0; i < candidate.length(); ++i)
-        {
-            const char c = candidate[i];
-            uint8_t digit;
-            if (c >= '0' && c <= '9')
-                digit = static_cast<uint8_t>(c - '0');
-            else if (c >= 'a' && c <= 'f')
-                digit = static_cast<uint8_t>(c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F')
-                digit = static_cast<uint8_t>(c - 'A' + 10);
-            else
-                return false;
-            parsed = (parsed << 4) | digit;
-        }
-        code = parsed;
-        return true;
-    }
-
-    ActionResult invokeIrSend(ManagedAction &, const String &payload)
-    {
-        JsonDocument doc;
-        if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
-            return {false, "expected {\"code\":\"POWER\"}"};
-
-        JsonVariantConst value = doc["code"];
-        if (!value.is<const char *>())
-            return {false, "'code' must be a string"};
-
-        const String requested = value.as<String>();
-        uint32_t code = getIrCode(requested);
-        if (code == 0 && (!parseHexCode(requested, code) || getIrProtocol(code) == IR_PROTO_NONE))
-            return {false, "unknown IR code; use a known name or hexadecimal value"};
-        if (!sendIRCode(code))
-            return {false, "IR transmit queue is full"};
-
-        return {true, String("queued ") + getIrName(code)};
     }
 
     ActionResult invokeAcManualSync(ManagedAction &, const String &payload)
@@ -118,11 +68,11 @@ namespace
         JsonVariantConst power = doc["power"];
         JsonVariantConst temperature = doc["temperature"];
         if (!power.is<bool>() || !temperature.is<int>())
-            return {false, formatString("'power' (%s) must be boolean and 'temperature' (%s) must be an integer", power.as<String>().c_str(), temperature.as<String>().c_str())};
+            return {false, formatArgs("'power' (%s) must be boolean and 'temperature' (%s) must be an integer", power.as<String>().c_str(), temperature.as<String>().c_str())};
         if (!gAc.manualSync(power.as<bool>(), temperature.as<int>()))
             return {false, "temperature must be between 18 and 30"};
 
-        syncAcResources();
+        gAc.publishResources();
         return {true, gAc.stateJson()};
     }
 
@@ -136,7 +86,7 @@ namespace
         if (!minutes.is<uint32_t>() || !gAc.setSleepMinutes(minutes.as<uint32_t>()))
             return {false, "'minutes' must be a non-negative integer in range"};
 
-        syncAcResources();
+        gAc.publishResources();
         return {true, gAc.stateJson()};
     }
 
@@ -155,7 +105,7 @@ namespace
         }
 
         gAc.morningOff(force);
-        syncAcResources();
+        gAc.publishResources();
         return {true, gAc.stateJson()};
     }
 
@@ -209,53 +159,11 @@ namespace
         return gAc.setLed(requested);
     }
 
-    bool bind(NetResource &resource)
-    {
-        return resource.isBound() || gResourcesManager.bindResource(&resource);
-    }
 }
 
-ManagedSensor<float> temperatureSensor("temperature");
-#if BOARD_HAS_DS18B20
-#else
-const ActionArgMetadata kSetTemperatureSensorArguments[] = {
-    {"owner", NetValueType::STRING},
-    {"name", NetValueType::STRING},
-};
-ManagedAction setTemperatureExternalSensor("set_temperature_sensor", kSetTemperatureSensorArguments);
-RemoteSensor<float> externalTemperatureSensor;
+// ---- declarations: stable names are the contract Adler exposes ----------------------
 
-ActionResult handleSetTemperatureSensor(ManagedAction &, const String &payload)
-{
-    JsonDocument doc;
-    if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
-    {
-        LOG("NetResources", "set_temperature_sensor: expected {\"owner\":\"device\",\"name\":\"resource\"}");
-        return {false, "expected {\"owner\":\"device\",\"name\":\"resource\"}"};
-    }
-
-    JsonVariantConst ownerValue = doc["owner"];
-    JsonVariantConst nameValue = doc["name"];
-    if (!ownerValue.is<const char *>() || !nameValue.is<const char *>())
-    {
-        LOG("NetResources", "set_temperature_sensor: 'owner' and 'name' must be strings");
-        return {false, "'owner' and 'name' must be strings"};
-    }
-
-    const String owner = ownerValue.as<String>();
-    const String name = nameValue.as<String>();
-    PersistentSettings.set("temperature_sensor_owner", owner);
-    PersistentSettings.set("temperature_sensor_name", name);
-    externalTemperatureSensor.setSource(owner, name);
-    return {true, String("configured temperature sensor: ") + owner + "/" + name};
-}
-
-#endif
-#if BOARD_HAS_IR_RECEIVER
-ManagedSensor<String> irRecvSensor("irrecv");
-#endif
-ManagedAction irSendAction("irsend", kIrSendArguments);
-RemoteSensor<bool> doorSensor;
+RemoteSensor<bool> doorSensor("door");
 ManagedSensor<String> acStatus("ac_status");
 ManagedSensor<int8_t> acControllerState("ac_state");
 ManagedSensor<bool> acKnown("ac_known");
@@ -273,29 +181,21 @@ ManagedState<bool> acLed("ac_led");
 ManagedAction acManualSyncAction("ac_manual_sync", kAcManualSyncArguments);
 ManagedAction acSleepAction("ac_sleep", kAcSleepArguments);
 ManagedAction acMorningOffAction("ac_morning_off", kAcMorningOffArguments);
-#if defined(BOARD_C6_V1)
-ManagedState<uint32_t> rgbLedColor("rgb");
-bool writeRgbLedColor(ManagedState<uint32_t> &resource, const uint32_t &requested)
-{
-    writeLedColor(requested);
-    return true;
-}
-#endif
 
-void syncAcResources()
+void AcController::publishResources()
 {
     static bool initialized = false;
     const bool force = !initialized;
-    updateManaged(acStatus, gAc.stateJson(), force);
-    updateManaged(acControllerState, static_cast<int8_t>(gAc.state()), force);
+    updateManaged(acStatus, stateJson(), force);
+    updateManaged(acControllerState, static_cast<int8_t>(state()), force);
     updateManaged(acKnown, acIrState.known, force);
-    updateManaged(acDoorState, gAc.doorState(), force);
-    updateManaged(acSleepDeadline, gAc.sleepDeadline(), force);
+    updateManaged(acDoorState, doorState(), force);
+    updateManaged(acSleepDeadline, sleepDeadline(), force);
     updateManaged(acPower, acIrState.state.power, force);
     updateManaged(acUnitTemperature, acIrState.state.temp, force);
-    updateManaged(acTarget, gAc.target(), force);
-    updateManaged(acSleepIn, gAc.sleepIn(), force);
-    updateManaged(acDoorPaused, gAc.doorPaused(), force);
+    updateManaged(acTarget, target(), force);
+    updateManaged(acSleepIn, sleepIn(), force);
+    updateManaged(acDoorPaused, doorPaused(), force);
     updateManaged(acMode, static_cast<int32_t>(acIrState.state.mode), force);
     updateManaged(acFan, acIrState.state.fan, force);
     updateManaged(acTurbo, acIrState.state.turbo, force);
@@ -303,9 +203,8 @@ void syncAcResources()
     initialized = true;
 }
 
-bool bindResources()
+void installAcResourceHandlers()
 {
-    irSendAction.onInvoke = invokeIrSend;
     acManualSyncAction.onInvoke = invokeAcManualSync;
     acSleepAction.onInvoke = invokeAcSleep;
     acMorningOffAction.onInvoke = invokeAcMorningOff;
@@ -318,60 +217,4 @@ bool bindResources()
     acFan.onWrite = writeAcFan;
     acTurbo.onWrite = writeAcTurbo;
     acLed.onWrite = writeAcLed;
-    // Keep the source configurable without reviving the old NetworkSensor
-    // abstraction. RemoteSensor owns subscription, decoding and freshness.
-    if (!doorSensor.isBound())
-    {
-        const String doorDevice = PersistentSettings.get("door_device", "");
-        const String doorResource = PersistentSettings.get(
-            "door_key", PersistentSettings.get("door_resource", "door"));
-        doorSensor.setSource(doorDevice, doorResource);
-    }
-
-    bool ok = true;
-#if BOARD_HAS_DS18B20
-    ok = bind(temperatureSensor) && ok;
-#else
-    setTemperatureExternalSensor.onInvoke = handleSetTemperatureSensor;
-    const String tempSensorOwner = PersistentSettings.get("temperature_sensor_owner", "");
-    const String tempSensorResource = PersistentSettings.get(
-        "temperature_sensor_name", PersistentSettings.get("temperature_sensor_resource", ""));
-    if (!tempSensorOwner.isEmpty() && !tempSensorResource.isEmpty())
-        externalTemperatureSensor.setSource(tempSensorOwner, tempSensorResource);
-    externalTemperatureSensor.onUpdate = [](NetValue<float> &, const float &value)
-    {
-        temperatureSensor.setValue(value);
-    };
-    ok = bind(setTemperatureExternalSensor) && ok;
-    ok = bind(externalTemperatureSensor) && ok;
-    ok = bind(temperatureSensor) && ok;
-#endif
-#if BOARD_HAS_IR_RECEIVER
-    ok = bind(irRecvSensor) && ok;
-#endif
-#if defined(BOARD_C6_V1)
-    rgbLedColor.onWrite = writeRgbLedColor;
-    ok = bind(rgbLedColor) && ok;
-
-#endif
-    ok = bind(irSendAction) && ok;
-    ok = bind(doorSensor) && ok;
-    ok = bind(acStatus) && ok;
-    ok = bind(acControllerState) && ok;
-    ok = bind(acKnown) && ok;
-    ok = bind(acDoorState) && ok;
-    ok = bind(acSleepDeadline) && ok;
-    ok = bind(acPower) && ok;
-    ok = bind(acUnitTemperature) && ok;
-    ok = bind(acTarget) && ok;
-    ok = bind(acSleepIn) && ok;
-    ok = bind(acDoorPaused) && ok;
-    ok = bind(acMode) && ok;
-    ok = bind(acFan) && ok;
-    ok = bind(acTurbo) && ok;
-    ok = bind(acLed) && ok;
-    ok = bind(acManualSyncAction) && ok;
-    ok = bind(acSleepAction) && ok;
-    ok = bind(acMorningOffAction) && ok;
-    return ok;
 }

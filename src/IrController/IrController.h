@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include <NightMare.h>
 #include <board.h>
+#include "IrCodes.h"
+
 
 // The IR side of Adler always provides transmission:
 //   an actuator -- codes queued by sendIRCode() and transmitted by a pump. Codes are
@@ -9,7 +11,7 @@
 //   the state the AC unit is believed to be in (AcIrStateController) as they are queued;
 #if BOARD_HAS_IR_RECEIVER
 // Boards with a demodulator also provide a sensor -- whatever it hears is decoded and handed
-//   to the network through the managed `irrecv` sensor, whichever remote it came from.
+//   to the network through the managed `ir:recv` sensor, whichever remote it came from.
 #endif
 
 #define MIN_AC_TEMP 18
@@ -35,60 +37,6 @@ constexpr uint8_t IR_SEND_PIN = PIN_IR_LED;
 #if BOARD_HAS_IR_RECEIVER
 constexpr uint8_t IR_RECEIVE_PIN = PIN_IR_RECEIVE;
 #endif
-
-/// @brief Every IR code this device knows, across remotes. The table in IrController.cpp
-/// pairs each with its wire name and protocol.
-enum IrCodes
-{
-    // MY AC unit -- its own 24-bit pulse-distance protocol
-    AC_POWER = 0x10001,
-    AC_PLUS = 0x40004,
-    AC_MINUS = 0x20002,
-    AC_COUNT_DOWN = 0x400040,
-    AC_LED = 0x800080,
-    AC_TURBO = 0x200020,
-    AC_MODE = 0x100010,
-    AC_VENTILATOR = 0x80008,
-    AC_SLEEP1 = 0x10100,
-    AC_SLEEP2 = 0x20200,
-    AC_SLEEP3 = 0x40400,
-
-    // HY350 Max projector - NEC raw values, LSB first
-    HY350_POWER = 0xEB14FF00,
-    HY350_UP = 0xFC03FF00,
-    HY350_DOWN = 0xFD02FF00,
-    HY350_LEFT = 0xF10EFF00,
-    HY350_RIGHT = 0xE51AFF00,
-    HY350_OK = 0xF807FF00,
-    HY350_VOL_UP = 0xF40BFF00,
-    HY350_VOL_DOWN = 0xA758FF00,
-    HY350_MUTE = 0xFE01FF00,
-    HY350_HOME = 0xB748FF00,
-    HY350_BACK = 0xA35CFF00,
-    HY350_LIST = 0xEC13FF00,
-};
-
-/// @brief How a code is transmitted and recognised. The AC speaks a 24-bit pulse-distance
-/// protocol of its own; the HY350 projector is plain NEC, address 0x00. A received frame
-/// only counts as one of ours when both the raw value and the protocol match.
-enum IrProtocol
-{
-    IR_PROTO_NONE = 0, ///< not in the table
-    IR_PROTO_AC,       ///< sendPulseDistanceWidth: 38 kHz, 9000/4550 header, 600/1700 and 600/550, 24 bits LSB first
-    IR_PROTO_NEC       ///< IrSender.sendNEC(raw & 0xFF, (raw >> 16) & 0xFF, 0): the raw is ~cmd|cmd|~addr|addr
-};
-
-/// @brief Gets the wire name of a code: "POWER" for the AC, "HY350_POWER" for the projector.
-/// @return The name, "UNKNOWN" if the code is not in the table.
-String getIrName(uint32_t IrCode);
-/// @brief Looks up a code by its wire name, the inverse of getIrName. Case and surrounding
-/// whitespace are ignored.
-/// @return The code, or 0 when the name is not one of the known commands.
-uint32_t getIrCode(const String &name);
-/// @brief Every name getIrCode() accepts, comma separated, for help text.
-String getIrCodeNames();
-/// @brief The protocol a table code belongs to, IR_PROTO_NONE for anything else.
-IrProtocol getIrProtocol(uint32_t code);
 
 // ---- the AC unit's believed state ------------------------------------------
 
@@ -141,10 +89,18 @@ extern AcIrStateController acIrState;
 
 void enableIrDebug(bool enable);
 bool getIrDebug();
+/// @brief Who asked for a transmission. Every send is tracked by the AC guesser; only the AC
+/// controller's own sends are reported on `tester/ir/confirmation`.
+enum IrSource : uint8_t
+{
+    IR_SRC_DIRECT = 0,     ///< console `IR`, the `ir:send` action: someone driving the LED by hand
+    IR_SRC_AC_CONTROLLER,  ///< the AcController policy and its AC state helper
+};
+
 /// @brief Queues any table code for transmission in its own protocol. An AC code also
 /// advances the AC belief. False if the queue is full or the code is not in the table, in
 /// which case nothing changes.
-bool sendIRCode(uint32_t code);
+bool sendIRCode(uint32_t code, IrSource source = IR_SRC_DIRECT);
 /// @brief Pin assignment, debug flag, pending queue depth and the AC belief as JSON.
 String IrInfoJson();
 void startIrServices();

@@ -1,91 +1,72 @@
 #include "IrController.h"
+#include <acGuesser.h>
 #include <ArduinoJson.h>
+// IRremote's feedback LED defaults to LED_BUILTIN, which is GPIO8 here: the same pin the
+// LEDC carrier owns. Every mark() then digitalWrite()s a pin that is not in GPIO mode.
+#define NO_LED_FEEDBACK_CODE
 #include <IRremote.hpp>
-#include <NightMare/NetResources.h>
 
-// ---- the code table ------------------------------------------------------------
-// One table drives name -> code, code -> name and code -> protocol, so the three
-// can never disagree. Wire names for the AC stay unprefixed: they are what the
-// Dashboard's AcController Service sends as `SENDIR <name>`.
+// ---- the network surface -------------------------------------------------------
+// IrController owns its Resources, stable names, handlers; NightMare binds them at startup (see startIrServices()).
 
-struct IrCodeEntry
-{
-    const char *name;
-    uint32_t code;
-    IrProtocol protocol;
+static Config<bool> irDebugConfig("ir:debug:enable", false);
+#if BOARD_HAS_IR_RECEIVER
+/// A generic struct is a JSON object carried as a String: the wire type stays `string` and the
+/// consumer decodes it. Fields: protocol, name, raw ("0x........"), bits, known, ms.
+static ManagedSensor<String> irRecvSensor("ir:recv");
+#endif
+
+static const ActionArgMetadata kIrSendArguments[] = {
+    {"code", NetValueType::STRING},
 };
+static ManagedAction irSendAction("ir:send", kIrSendArguments);
 
-static const IrCodeEntry kIrCodes[] = {
-    // the AC unit
-    {"POWER", AC_POWER, IR_PROTO_AC},
-    {"PLUS", AC_PLUS, IR_PROTO_AC},
-    {"MINUS", AC_MINUS, IR_PROTO_AC},
-    {"COUNT_DOWN", AC_COUNT_DOWN, IR_PROTO_AC},
-    {"LED", AC_LED, IR_PROTO_AC},
-    {"TURBO", AC_TURBO, IR_PROTO_AC},
-    {"MODE", AC_MODE, IR_PROTO_AC},
-    {"VENTILATOR", AC_VENTILATOR, IR_PROTO_AC},
-    {"SLEEP1", AC_SLEEP1, IR_PROTO_AC},
-    {"SLEEP2", AC_SLEEP2, IR_PROTO_AC},
-    {"SLEEP3", AC_SLEEP3, IR_PROTO_AC},
-    // the HY350 Max projector remote, NEC address 0x00
-    {"HY350_POWER", HY350_POWER, IR_PROTO_NEC},
-    {"HY350_UP", HY350_UP, IR_PROTO_NEC},
-    {"HY350_DOWN", HY350_DOWN, IR_PROTO_NEC},
-    {"HY350_LEFT", HY350_LEFT, IR_PROTO_NEC},
-    {"HY350_RIGHT", HY350_RIGHT, IR_PROTO_NEC},
-    {"HY350_OK", HY350_OK, IR_PROTO_NEC},
-    {"HY350_VOL_UP", HY350_VOL_UP, IR_PROTO_NEC},
-    {"HY350_VOL_DOWN", HY350_VOL_DOWN, IR_PROTO_NEC},
-    {"HY350_MUTE", HY350_MUTE, IR_PROTO_NEC},
-    {"HY350_HOME", HY350_HOME, IR_PROTO_NEC},
-    {"HY350_BACK", HY350_BACK, IR_PROTO_NEC},
-    {"HY350_LIST", HY350_LIST, IR_PROTO_NEC},
-};
-
-static const size_t kIrCodeCount = sizeof(kIrCodes) / sizeof(kIrCodes[0]);
-
-static const IrCodeEntry *findEntry(uint32_t code)
+static bool parseHexCode(const String &text, uint32_t &code)
 {
-    for (size_t i = 0; i < kIrCodeCount; i++)
-        if (kIrCodes[i].code == code)
-            return &kIrCodes[i];
-    return nullptr;
-}
+    String candidate = text;
+    candidate.trim();
+    if (candidate.startsWith("0x") || candidate.startsWith("0X"))
+        candidate.remove(0, 2);
+    if (candidate.length() == 0 || candidate.length() > 8)
+        return false;
 
-String getIrName(uint32_t IrCode)
-{
-    const IrCodeEntry *e = findEntry(IrCode);
-    return e ? e->name : "UNKNOWN";
-}
-
-IrProtocol getIrProtocol(uint32_t code)
-{
-    const IrCodeEntry *e = findEntry(code);
-    return e ? e->protocol : IR_PROTO_NONE;
-}
-
-uint32_t getIrCode(const String &name)
-{
-    String wanted = name;
-    wanted.trim();
-    wanted.toUpperCase();
-    for (size_t i = 0; i < kIrCodeCount; i++)
-        if (wanted == kIrCodes[i].name)
-            return kIrCodes[i].code;
-    return 0; // no real command is 0, so it doubles as "not found"
-}
-
-String getIrCodeNames()
-{
-    String list;
-    for (size_t i = 0; i < kIrCodeCount; i++)
+    uint32_t parsed = 0;
+    for (size_t i = 0; i < candidate.length(); ++i)
     {
-        if (i)
-            list += ", ";
-        list += kIrCodes[i].name;
+        const char c = candidate[i];
+        uint8_t digit;
+        if (c >= '0' && c <= '9')
+            digit = static_cast<uint8_t>(c - '0');
+        else if (c >= 'a' && c <= 'f')
+            digit = static_cast<uint8_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            digit = static_cast<uint8_t>(c - 'A' + 10);
+        else
+            return false;
+        parsed = (parsed << 4) | digit;
     }
-    return list;
+    code = parsed;
+    return true;
+}
+
+static ActionResult invokeIrSend(ManagedAction &, const String &payload)
+{
+    JsonDocument doc;
+    if (deserializeJson(doc, payload) || !doc.is<JsonObjectConst>())
+        return {false, "expected {\"code\":\"POWER\"}"};
+
+    JsonVariantConst value = doc["code"];
+    if (!value.is<const char *>())
+        return {false, "'code' must be a string"};
+
+    const String requested = value.as<String>();
+    uint32_t code = getIrCode(requested);
+    if (code == 0 && (!parseHexCode(requested, code) || getIrProtocol(code) == IR_PROTO_NONE))
+        return {false, "unknown IR code; use a known name or hexadecimal value"};
+    if (!sendIRCode(code))
+        return {false, "IR transmit queue is full"};
+
+    return {true, String("queued ") + getIrName(code)};
 }
 
 // ---- belief about the AC unit ---------------------------------------------------
@@ -161,7 +142,7 @@ bool AcIrStateController::setPower(bool powerState)
         return true;
     // No direct assignment: sendIRCode() applies nextState(), which performs the
     // toggle. Setting state.power here as well would cancel that toggle out.
-    return sendIRCode(AC_POWER);
+    return sendIRCode(AC_POWER, IR_SRC_AC_CONTROLLER);
 }
 
 bool AcIrStateController::setTemp(uint8_t temp)
@@ -174,19 +155,19 @@ bool AcIrStateController::setTemp(uint8_t temp)
     // runs at queue time, so the loop below converges on the tracked state immediately and
     // never waits on the transmitter -- which is what used to hold loop() for seconds.
     bool wasOn = state.power;
-    if (!wasOn && !sendIRCode(AC_POWER))
+    if (!wasOn && !sendIRCode(AC_POWER, IR_SRC_AC_CONTROLLER))
         return false;
     bool complete = true;
     uint8_t guard = MAX_AC_TEMP - MIN_AC_TEMP + 1;
     while (state.temp != temp && guard--)
     {
-        if (!sendIRCode(state.temp < temp ? AC_PLUS : AC_MINUS))
+        if (!sendIRCode(state.temp < temp ? AC_PLUS : AC_MINUS, IR_SRC_AC_CONTROLLER))
         {
             complete = false;
             break; // The belief stays consistent with what was actually queued.
         }
     }
-    if (!wasOn && !sendIRCode(AC_POWER))
+    if (!wasOn && !sendIRCode(AC_POWER, IR_SRC_AC_CONTROLLER))
         complete = false;
     return complete && state.temp == temp && state.power == wasOn;
 }
@@ -202,7 +183,7 @@ bool AcIrStateController::setMode(AcIrMode mode)
     // MODE cycles cool -> ventilator -> humidifier -> cool. Press it until the belief matches.
     uint8_t guard = 3;
     while (this->state.mode != mode && guard--)
-        if (!sendIRCode(AC_MODE))
+        if (!sendIRCode(AC_MODE, IR_SRC_AC_CONTROLLER))
             return false;
     return this->state.mode == mode;
 }
@@ -245,22 +226,20 @@ String AcIrStateController::toJson()
 }
 
 AcIrStateController acIrState;
-bool irDebugEnabled = false;
-
 void enableIrDebug(bool enable)
 {
-    irDebugEnabled = enable;
-    PersistentSettings.setFlag("ir_debug", enable);
+    irDebugConfig.set(enable);
 }
 
 bool getIrDebug()
 {
-    return irDebugEnabled;
+    return irDebugConfig.value();
 }
 
 // ---- transmit queue --------------------------------------------------------------
 
 static uint32_t _irQueue[IR_ASYNC_QUEUE_SIZE] = {0};
+static uint8_t _irQueueSource[IR_ASYNC_QUEUE_SIZE] = {0}; // IrSource, parallel to _irQueue
 static uint8_t _irQueueWrite = 0;
 static uint8_t _irQueueReadIndex = 0;
 
@@ -270,11 +249,11 @@ static portMUX_TYPE irLock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t lastSentCode = 0;
 static uint32_t lastSentMs = 0;
 
-bool sendIRCode(uint32_t code)
+bool sendIRCode(uint32_t code, IrSource source)
 {
     if (getIrProtocol(code) == IR_PROTO_NONE)
     {
-        if (irDebugEnabled)
+        if (getIrDebug())
             Serial.printf("[IR] refusing to queue 0x%08lX: not in the table\n", (unsigned long)code);
         return false;
     }
@@ -283,11 +262,12 @@ bool sendIRCode(uint32_t code)
     if (isQueueFull)
     {
         interrupts();
-        if (irDebugEnabled)
+        if (getIrDebug())
             Serial.println("[IR] queue full, dropped " + getIrName(code));
         return false;
     }
     _irQueue[_irQueueWrite] = code;
+    _irQueueSource[_irQueueWrite] = source;
     _irQueueWrite = (_irQueueWrite + 1) % IR_ASYNC_QUEUE_SIZE;
     // The AC belief is advanced here, at queue time, and nowhere else on the send path:
     // callers reason about it right after queueing, not after the pump gets to it.
@@ -328,12 +308,14 @@ static void handleIrAsync()
 {
     static unsigned long lastIrSendTime = 0;
     uint32_t codeToSend = 0;
+    IrSource sourceOfCode = IR_SRC_DIRECT;
     if (millis() - lastIrSendTime < IR_SEND_INTERVAL_MS)
         return;
     noInterrupts();
     if (_irQueue[_irQueueReadIndex] != 0)
     {
         codeToSend = _irQueue[_irQueueReadIndex];
+        sourceOfCode = static_cast<IrSource>(_irQueueSource[_irQueueReadIndex]);
         _irQueue[_irQueueReadIndex] = 0;
         _irQueueReadIndex = (_irQueueReadIndex + 1) % IR_ASYNC_QUEUE_SIZE;
     }
@@ -353,8 +335,9 @@ static void handleIrAsync()
     portEXIT_CRITICAL(&irLock);
 
     transmit(codeToSend);
-
-    if (irDebugEnabled)
+    NightMare::PublishText("tester/sent", getIrName(codeToSend));
+    acGuessIrSent(codeToSend, lastIrSendTime, sourceOfCode == IR_SRC_AC_CONTROLLER);
+    if (getIrDebug())
         Serial.printf("[IR] tx done, AC belief %s\n", acIrState.toJson().c_str());
 }
 
@@ -372,7 +355,7 @@ IrSensorStatus irSensorStatus()
     return copy;
 }
 
-static void recordReceived(uint32_t code, const String &name)
+static void recordReceived(decode_type_t protocol, uint8_t bits, uint32_t code, const String &name, bool known)
 {
     portENTER_CRITICAL(&sensorLock);
     irSensor.everReceived = true;
@@ -382,7 +365,18 @@ static void recordReceived(uint32_t code, const String &name)
     irSensor.lastReceiveMs = millis();
     portEXIT_CRITICAL(&sensorLock);
 
-    irRecvSensor.setValue(name);
+    JsonDocument doc;
+    doc["protocol"] = getProtocolString(protocol);
+    doc["name"] = name;
+    char rawText[11];
+    snprintf(rawText, sizeof(rawText), "0x%08lX", (unsigned long)code);
+    doc["raw"] = rawText;
+    doc["bits"] = bits;
+    doc["known"] = known;
+    doc["ms"] = millis(); // also makes two identical presses distinct readings
+    String frame;
+    serializeJson(doc, frame);
+    irRecvSensor.setValue(frame);
 }
 
 /// @brief Whether a decoded frame is our own transmission coming back off the room.
@@ -405,9 +399,10 @@ static void IRReceiveHandler(void *pvParameters)
     {
         if (IrReceiver.decode())
         {
+            auto delta = millis() - lastReceiveTime;
             const decode_type_t protocol = IrReceiver.decodedIRData.protocol;
             const uint32_t raw = IrReceiver.decodedIRData.decodedRawData;
-            if (raw == 0 && protocol == UNKNOWN)
+            if (raw == 0 || protocol == UNKNOWN)
             {
                 // The library's decode() returns a 0/UNKNOWN pair when it has no more data to
                 // give. It does not mean the remote sent a 0 code, which is not a real code.
@@ -424,10 +419,10 @@ static void IRReceiveHandler(void *pvParameters)
 
             // Every decode is logged, whatever it is: a remote arriving under a protocol the
             // table does not list looks exactly like silence otherwise.
-            Serial.printf("[IR] rx protocol=%s raw=0x%08lX bits=%u repeat=%d -> %s\n",
+            Serial.printf("[IR] rx protocol=%s raw=0x%08lX bits=%u repeat=%d -> %s (delta: %lu ms)\n",
                           getProtocolString(protocol), (unsigned long)raw,
-                          IrReceiver.decodedIRData.numberOfBits, isRepeat, name.c_str());
-            if (irDebugEnabled)
+                          IrReceiver.decodedIRData.numberOfBits, isRepeat, name.c_str(), delta);
+            if (getIrDebug())
                 IrReceiver.printIRResultShort(&Serial);
 
             if (isRepeat)
@@ -449,7 +444,7 @@ static void IRReceiveHandler(void *pvParameters)
                 // and a press we can decode is proof the unit's state is now known.
                 acIrState.nextState(static_cast<IrCodes>(raw));
                 acIrState.known = true;
-                recordReceived(raw, name);
+                recordReceived(protocol, IrReceiver.decodedIRData.numberOfBits, raw, name, true);
                 Serial.printf("[IR] rx applied, AC belief %s\n", acIrState.toJson().c_str());
                 lastReceivedCode = raw;
                 lastReceiveTime = millis();
@@ -457,7 +452,7 @@ static void IRReceiveHandler(void *pvParameters)
             else if (necFrame)
             {
                 // The projector remote. Reported, not acted on: this device does not control it.
-                recordReceived(raw, name);
+                recordReceived(protocol, IrReceiver.decodedIRData.numberOfBits, raw, name, true);
                 lastReceivedCode = raw;
                 lastReceiveTime = millis();
             }
@@ -465,7 +460,7 @@ static void IRReceiveHandler(void *pvParameters)
             {
                 // A remote we do not know, under a protocol we could decode. Report it tagged
                 // with the protocol so it can be identified from the readings and added.
-                recordReceived(raw, String(getProtocolString(protocol)) + ":0x" + String(raw, HEX));
+                recordReceived(protocol, IrReceiver.decodedIRData.numberOfBits, raw, name, false);
                 lastReceivedCode = raw;
                 lastReceiveTime = millis();
             }
@@ -487,7 +482,7 @@ String IrInfoJson()
     json += "\"receivePin\": null,";
     json += "\"receivePinLevel\": null,";
 #endif
-    json += "\"debug\": " + String(irDebugEnabled ? "true" : "false") + ",";
+    json += "\"debug\": " + String(getIrDebug() ? "true" : "false") + ",";
     json += "\"queued\": " + String(irQueueDepth()) + ",";
     json += "\"acState\": " + acIrState.toJson();
     json += "}";
@@ -496,20 +491,21 @@ String IrInfoJson()
 
 void startIrServices()
 {
+    irSendAction.onInvoke = invokeIrSend;
     pinMode(IR_SEND_PIN, OUTPUT);
+    Serial.printf("[IR] services initialized\n");
 #if BOARD_HAS_IR_RECEIVER
     pinMode(IR_RECEIVE_PIN, INPUT_PULLUP);
 #endif
-    enableIrDebug(PersistentSettings.getFlag("ir_debug"));
     IrSender.begin(IR_SEND_PIN);
 #if BOARD_HAS_IR_RECEIVER
-    Serial.printf("[IR] tx GPIO%u, rx GPIO%u, debug %s\n", IR_SEND_PIN, IR_RECEIVE_PIN, irDebugEnabled ? "ON" : "OFF");
+    Serial.printf("[IR] tx GPIO%u, rx GPIO%u, debug %s\n", IR_SEND_PIN, IR_RECEIVE_PIN, getIrDebug() ? "ON" : "OFF");
     Serial.printf("[IR] rx pin idle level %d %s\n", digitalRead(IR_RECEIVE_PIN),
                   digitalRead(IR_RECEIVE_PIN) ? "(expected)" : "(SUSPECT: check receiver power and wiring)");
     BaseType_t res = xTaskCreate(IRReceiveHandler, "ir_receive", IR_RECEIVE_TASK_STACK_SIZE, NULL, IR_RECEIVE_TASK_PRIORITY, NULL);
     Serial.printf("IR receive task created: %s\n", res == pdPASS ? "yes" : "no");
 #else
-    Serial.printf("[IR] tx GPIO%u, no receiver, debug %s\n", IR_SEND_PIN, irDebugEnabled ? "ON" : "OFF");
+    Serial.printf("[IR] tx GPIO%u, no receiver, debug %s\n", IR_SEND_PIN, getIrDebug() ? "ON" : "OFF");
 #endif
 }
 

@@ -43,4 +43,17 @@ void writeLedColor(uint32_t color)
     // Implement the logic to set the LED color.
     // write color to WS2812;
 }
+
+ManagedState<uint32_t> rgbLedColor("rgb");
+
+static bool onRgbWrite(ManagedState<uint32_t> &, const uint32_t &requested)
+{
+    writeLedColor(requested);
+    return true;
+}
+
+void setupLed()
+{
+    rgbLedColor.onWrite = onRgbWrite;
+}
 #endif

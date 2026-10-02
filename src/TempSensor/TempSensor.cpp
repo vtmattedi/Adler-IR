@@ -1,9 +1,18 @@
 #include "TempSensor.h"
 
-#if BOARD_HAS_DS18B20
-
 #include <NightMare.h>
-#include <NightMare/NetResources.h>
+
+ManagedSensor<float> temperatureSensor("temperature");
+#if !BOARD_HAS_DS18B20
+RemoteSensor<float> externalTemperatureSensor("external_temperature_sensor");
+
+void setupTempSensor()
+{
+    temperatureSensor.dependsOn(externalTemperatureSensor);
+}
+#endif
+
+#if BOARD_HAS_DS18B20
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
@@ -22,6 +31,21 @@ static TaskHandle_t tempTaskHandle = nullptr;
 /// because every critical section is a few stores or one struct copy.
 static portMUX_TYPE statusLock = portMUX_INITIALIZER_UNLOCKED;
 static TempSensorStatus sensorStatus = {false, false, NAN, 0, ""};
+
+/// Notes are limited to 64 bytes, so the address (16 hex digits) and both limits share one compact
+/// JSON object. The policy is re-declared when the address becomes known; that keeps the
+/// firmware default and any persisted poll override untouched.
+static void describeHardware(const char *address)
+{
+    char note[NetResourceHardwareNoteMaxLength + 1];
+    snprintf(note, sizeof(note), "{\"addr\":\"%s\",\"min\":%u,\"max\":%u}", address,
+             (unsigned)TEMP_POLL_MIN_MS, (unsigned)TEMP_POLL_MAX_MS);
+    temperatureSensor.setHardwarePolicy({
+        .pollMs = TEMP_READ_INTERVAL_MS,
+        .flags = REPORT_HW_CONNECTION | CONFIGURABLE_POLL | CAN_DISABLE,
+        .note = String(note),
+    });
+}
 
 /// @brief Enumerates the bus and caches the first sensor's address, so each read can address it
 /// directly instead of repeating the ROM search.
@@ -47,6 +71,8 @@ static bool findSensor()
     bool parasite = sensors.isParasitePowerMode();
     Serial.printf("TempSensor: DS18B20 %s on GPIO%d%s\n", addr, DS18B20_PIN, parasite ? " (parasite power)" : "");
 
+    describeHardware(addr);
+    temperatureSensor.setHardwareConnected(true);
     portENTER_CRITICAL(&statusLock);
     sensorStatus.connected = true;
     sensorStatus.parasite = parasite;
@@ -64,6 +90,9 @@ static void recordFailure()
     Serial.println("TempSensor: sensor stopped responding");
     failures = 0;
     sensorFound = false;
+    // The retained reading would otherwise keep claiming a temperature nobody is measuring.
+    temperatureSensor.setHardwareConnected(false);
+    temperatureSensor.setAvailable(false);
 
     // lastReadMs is kept: after a loss it says how long ago the last good reading was.
     portENTER_CRITICAL(&statusLock);
@@ -99,6 +128,7 @@ static void readSensor()
     sensorStatus.lastReadMs = readMs;
     portEXIT_CRITICAL(&statusLock);
 
+    temperatureSensor.setAvailable(true); // no-op unless a loss or a disable withdrew it
     temperatureSensor.setValue(t);
 }
 
@@ -109,15 +139,28 @@ static void tempSensorTask(void *)
         uint32_t startMs = millis();
         // Sit out an OTA: every 1-Wire bit slot runs with interrupts masked, and an upload
         // stalling behind them fails.
-        if (!SystemState.get(SystemFlag::OtaRunning))
+        if (!temperatureSensor.hardwareEnabled())
+        {
+            // Acquisition disabled remotely: no stale value stays advertised.
+            temperatureSensor.setAvailable(false);
+        }
+        else if (!SystemState.get(SystemFlag::OtaRunning))
         {
             if (!sensorFound)
                 sensorFound = findSensor();
             if (sensorFound)
                 readSensor();
         }
+        // 0 means "default", a negative value disables, a positive one is clamped to the limits
+        // advertised in the hardware note.
+        const int32_t polled = temperatureSensor.hardwarePollMs();
+        const uint32_t interval = polled > 0
+                                      ? constrain(static_cast<uint32_t>(polled), TEMP_POLL_MIN_MS, TEMP_POLL_MAX_MS)
+                                      : TEMP_READ_INTERVAL_MS;
         uint32_t elapsed = millis() - startMs;
-        uint32_t wait = (elapsed >= TEMP_READ_INTERVAL_MS) ? 1 : (TEMP_READ_INTERVAL_MS - elapsed);
+        uint32_t wait = (elapsed >= interval) ? 1 : (interval - elapsed);
+        if (!temperatureSensor.hardwareEnabled())
+            wait = 1000; // keep watching for re-enable
         vTaskDelay(pdMS_TO_TICKS(wait));
     }
 }
@@ -126,6 +169,9 @@ void setupTempSensor()
 {
     if (tempTaskHandle)
         return; // already running
+
+    describeHardware(""); // no address until the bus has been searched
+    temperatureSensor.setHardwareConnected(false); // until the task finds it
 
     oneWire.begin(DS18B20_PIN);
     sensors.setWaitForConversion(false);

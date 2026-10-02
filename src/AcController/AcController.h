@@ -4,10 +4,13 @@
 #include <ArduinoJson.h>
 #include <NightMare.h>
 #include <IrController/IrController.h>
-
+#include <acGuesser.h>
+#include <TempSensor/TempSensor.h>
+#include "AcConfig.h"
 constexpr uint32_t AC_LOOP_INTERVAL_MS = 2000;
 constexpr float AC_DEFAULT_HYSTERESIS = 0.5f;
 constexpr uint32_t AC_DEFAULT_INPUT_STALE_SECONDS = 600;
+
 
 enum AcControllerState : int8_t
 {
@@ -25,9 +28,12 @@ enum AcControllerState : int8_t
 class AcController
 {
 public:
-    void begin(ManagedSensor<float> &temperature, RemoteSensor<bool> &door);
+    /// Installs config policy and resource handlers. Call before startNightMareESP().
+    void begin();
     void loop();
-    void reloadConfig();
+    /// Publishes controller/IR changes into the managed AC resources. Writes only fields
+    /// whose effective value changed.
+    void publishResources();
 
     bool setUnitTemperature(uint8_t temperature);
     bool setTarget(float target); // Negative disables thermostat control.
@@ -56,17 +62,14 @@ public:
     NightMareResults command(const NightMareMessage &message);
 
 private:
-    ManagedSensor<float> *temperature_ = nullptr;
-    RemoteSensor<bool> *door_ = nullptr;
-
     float hysteresis_ = AC_DEFAULT_HYSTERESIS;
     uint32_t inputStaleMs_ = AC_DEFAULT_INPUT_STALE_SECONDS * 1000UL;
     uint32_t doorSecsToPause_ = 300;
     uint32_t doorSecsToStop_ = 600;
     bool doorControlEnabled_ = true;
     bool doorInvert_ = false;
-    String turnOffTime_ = "05:30";
-    String sleepInTurnOffTime_ = "08:30";
+    TimeType turnOffTime_{5, 30};
+    TimeType sleepInTurnOffTime_{8, 30};
     float defaultTarget_ = 24.0f;
 
     float target_ = -24.0f;
@@ -84,10 +87,11 @@ private:
     uint32_t lastLoopMs_ = 0;
     bool tasksEnsured_ = false;
 
-    void loadConfig();
+    void syncConfig();
     void doorLoop();
     void targetLoop();
     void sleepLoop();
+    void shutdownUnit();
     void ensureScheduledTasks();
     bool scheduleMorningOff(bool forced);
     static void morningOffJob();

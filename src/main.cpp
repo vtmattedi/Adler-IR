@@ -6,26 +6,28 @@
 #include <TempSensor/TempSensor.h>
 #include <IrController/IrController.h>
 #include <AcController/AcController.h>
-#include <NightMare/NetResources.h>
 #include <LittleFS.h>
+#include <acGuesser.h>
+#if defined(BOARD_C6_V1)
+#include <ledController/ledController.h>
+#endif
 // Adler: the air-conditioner controller.
 //   sensors     DS18B20 (local), the IR receiver (local), the door (another device, over MQTT)
 //   actuator    the IR transmitter
-
-// ---- the resolver -------------------------------------------------------------------
 
 NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
 {
     if (gAc.handles(message.command))
     {
         NightMareResults result = gAc.command(message);
-        syncAcResources();
+        gAc.publishResources();
         return result;
     }
 
     NightMareResults res;
     res.result = false;
     res.response = "not implemented";
+
 #if defined(BOARD_C6_V1)
     if (message.command == "RGB")
     {
@@ -46,6 +48,51 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
     }
     else
 #endif
+        if (message.command == "IR")
+    {
+        if (message.argc > 0)
+        {
+            uint32_t code = getIrCode(message.args[0]);
+            if (code != 0)
+            {
+                if (sendIRCode(code))
+                {
+                    res.result = true;
+                    res.response = "IR code sent: " + String(message.args[0]);
+                }
+                else
+                {
+                    res.result = false;
+                    res.response = "Failed to send IR code: " + String(message.args[0]);
+                }
+            }
+            else
+            {
+                res.result = false;
+                res.response = "Unknown IR code name: " + String(message.args[0]);
+            }
+        }
+
+        else
+        {
+            res.result = false;
+            res.response = "No IR code name provided";
+        }
+    }
+    else if (message.command == "AT")
+    {
+        Serial.printf("AC Guess: \n");
+        Serial.printf("\t-Last IR Code: %s\n", getIrName(acGuess.lastIrCode).c_str());
+        Serial.printf("\t\t-Last IR Sent: %lu\n", acGuess.lastIrSent);
+        Serial.printf("\t-Last Beep: %lu\n", acGuess.lastbeep);
+        Serial.printf("\t-Fan Guess: %s\n", acGuess.fanguess ? "true" : "false");
+        Serial.printf("\t\t-Last Fan Change: %lu\n", acGuess.lastfanchange);
+        Serial.printf("\t-Compressor Guess: %s\n", acGuess.compressorguess ? "true" : "false");
+        Serial.printf("\t\t-Last Compressor Change: %lu\n", acGuess.lastcompressorchange);
+        res.result = true;
+        res.response = "AC Guess state printed to Serial";
+    }
+    else
     {
         Serial.printf("Command received: %s\n", message.command.c_str());
     }
@@ -54,65 +101,58 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
 
 // ---- lifecycle -------------------------------------------------------------------------
 
+void handleTestMessage(const char *topic, const uint8_t *payload, size_t length, bool retained)
+{
+    Serial.printf("MQTT message received: topic=%s, payload=%.*s, retained=%d\n", topic, (int)length, payload, retained);
+}
+
 void setup()
 {
+
     introNightMareESP();
     printBoardInfo();
-
+    NightMare::Subscribe("test/#");
+    NightMare::OnMessage(handleTestMessage);
     setCommandResolver(localHandleNightMareCommand);
-    gAc.begin(temperatureSensor, doorSensor);
-    if (!bindResources())
-        Serial.println("Adler: one or more NightMare resources failed to bind");
-    syncAcResources();
-#if BOARD_HAS_DS18B20
+    // Each module declares and keeps its own Resources and Configs; startNightMareESP() binds them.
+    gAc.begin();
+    gAc.publishResources();
     setupTempSensor();
-#endif
     startIrServices();
+#if defined(BOARD_C6_V1)
+    setupLed();
+#endif
     startNightMareESP();
-
-    const TelemetryResult hw =
-        Telemetry.getHardware(HardwareFormat::MSGPACK);
-
-    Serial.printf("MPACK len=%u\n", hw.data.length());
-
-    for (size_t i = 0; i < hw.data.length(); ++i)
-    {
-        Serial.printf("%02X", (uint8_t)hw.data[i]);
-
-        if ((i + 1) % 32 == 0)
-            Serial.println();
-    }
-
-    Serial.println();
-
-    JsonDocument verify;
-    DeserializationError err = deserializeMsgPack(
-        verify,
-        hw.data.c_str(),
-        hw.data.length());
-
-    if (err)
-    {
-        Serial.printf(
-            "LOCAL MSGPACK DECODE FAILED: %s\n",
-            err.c_str());
-    }
-    else
-    {
-        Serial.println("LOCAL MSGPACK DECODE OK:");
-        serializeJsonPretty(verify, Serial);
-        Serial.println();
-    }
+    startAcGuess();
 #if defined(BOARD_C6_V1)
     pinMode(PIN_BUTTON, INPUT_PULLUP);
 
 #endif
+    // int results[WIFI_POWER_21dBm] = {0};
+    // for (int i = 0; i < WIFI_POWER_21dBm; ++i)
+    // {
+    //     bool is_power = powerStr((wifi_power_t)i) != "unknown";
+    //     if (!is_power)
+    //         {
+    //             results[i] = -1;
+    //             continue;
+    //         }
+    //     wifi_connect((wifi_power_t)i);
+    //     results[i] = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
+    // }
+    // for (int i = 0; i < WIFI_POWER_21dBm; ++i)
+    // {
+    //     if (results[i] == -1)
+    //         continue;
+    //     Serial.printf("WiFi power %s dBm %s\n", powerStr((wifi_power_t)i), OK_LOG(results[i] == 1));
+    // }
 }
 
 void loop()
 {
+
     gAc.loop();
-    syncAcResources();
+    gAc.publishResources();
     pumpIrServices();
     tickNightMareESP();
 #if defined(BOARD_C6_V1)
@@ -123,7 +163,7 @@ void loop()
         {
             LOG("Button", "pressed");
             gAc.setPower(!acIrState.state.power);
-            syncAcResources();
+            gAc.publishResources();
         }
         else
             LOG("Button", "released");

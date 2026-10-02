@@ -1,7 +1,7 @@
 {
     "actions": [
         {
-            "name": "irsend",
+            "name": "ir:send",
             "role": "managed",
             "description": "Queue a known IR command for transmission.",
             "parameters": [
@@ -46,9 +46,9 @@
             "type": "float"
         },
         {
-            "name": "irrecv",
+            "name": "ir:recv",
             "role": "managed",
-            "description": "Name of the last IR command received.",
+            "description": "Last decoded IR frame, a JSON object in a string: protocol, name, raw, bits, known, ms.",
             "type": "string"
         },
         {

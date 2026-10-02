@@ -72,5 +72,6 @@ inline int port()
 #define NM_ENABLE_LVGL 0
 #define NM_CONSOLE_SERIAL 1
 #define NM_FIRMWARE_VERSION VERSION
+#define NM_LOG_USE_TIME_OF_DAY 1
 
 #define NM_LOG_LEVEL NM_LOG_LEVEL_TRACE 

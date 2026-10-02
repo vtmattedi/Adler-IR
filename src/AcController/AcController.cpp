@@ -1,11 +1,7 @@
 #include "AcController.h"
 
+#include "AcResources.h"
 #include <math.h>
-#if BOARD_HAS_DS18B20
-#include <TempSensor/TempSensor.h>
-#else
-#include <NightMare/NetResources.h>
-#endif
 
 namespace
 {
@@ -27,68 +23,50 @@ bool parseOnOff(const String &text, bool &value)
     return true;
 }
 
-void ensureSetting(const String &key, const String &value)
-{
-    if (!PersistentSettings.exists(key))
-        PersistentSettings.set(key, value);
-}
 }
 
 AcController gAc;
 
-void AcController::begin(ManagedSensor<float> &temperature, RemoteSensor<bool> &door)
+void AcController::begin()
 {
-    temperature_ = &temperature;
-    door_ = &door;
-    loadConfig();
+    installAcConfigPolicy();
+    syncConfig();
     target_ = -fabsf(defaultTarget_);
+    installAcResourceHandlers();
 }
 
-void AcController::loadConfig()
+void AcController::syncConfig()
 {
-    ensureSetting("ac_hysteresis", String(AC_DEFAULT_HYSTERESIS));
-    ensureSetting("ac_input_stale_secs", String(AC_DEFAULT_INPUT_STALE_SECONDS));
-    ensureSetting("ac_door_pause_secs", "300");
-    ensureSetting("ac_door_stop_secs", "600");
-    ensureSetting("ac_door_control", "1");
-    ensureSetting("ac_turn_off_time", "05:30");
-    ensureSetting("ac_sleep_in_turn_off_time", "08:30");
-    ensureSetting("ac_default_target", "24");
+    hysteresis_ = acHysteresisConfig.value();
+    inputStaleMs_ = acInputStaleSecondsConfig.value() * 1000UL;
+    doorSecsToPause_ = acDoorPauseSecondsConfig.value();
+    doorSecsToStop_ = acDoorStopSecondsConfig.value();
+    doorControlEnabled_ = acDoorControlConfig.value();
+    doorInvert_ = doorInvertConfig.value();
+    const float configuredDefaultTarget = acDefaultTargetConfig.value();
+    const bool targetFollowsDefault = target_ < 0.0f &&
+                                      fabsf(target_) == defaultTarget_;
+    defaultTarget_ = configuredDefaultTarget;
+    if (targetFollowsDefault)
+        target_ = -defaultTarget_;
 
-    const float hysteresis = PersistentSettings.get("ac_hysteresis", "0.5").toFloat();
-    hysteresis_ = hysteresis > 0.0f ? hysteresis : AC_DEFAULT_HYSTERESIS;
-
-    uint32_t staleSeconds = PersistentSettings.get(
-        "ac_input_stale_secs", String(AC_DEFAULT_INPUT_STALE_SECONDS)).toInt();
-    if (staleSeconds == 0 || staleSeconds > INT32_MAX / 1000UL)
-        staleSeconds = AC_DEFAULT_INPUT_STALE_SECONDS;
-    inputStaleMs_ = staleSeconds * 1000UL;
-
-    doorSecsToPause_ = PersistentSettings.get("ac_door_pause_secs", "300").toInt();
-    doorSecsToStop_ = PersistentSettings.get("ac_door_stop_secs", "600").toInt();
-    if (doorSecsToStop_ < doorSecsToPause_)
-        doorSecsToStop_ = doorSecsToPause_;
-    doorControlEnabled_ = PersistentSettings.get("ac_door_control", "1") != "0";
-    doorInvert_ = PersistentSettings.get("door_invert", "0") == "1";
-    turnOffTime_ = PersistentSettings.get("ac_turn_off_time", "05:30");
-    sleepInTurnOffTime_ = PersistentSettings.get("ac_sleep_in_turn_off_time", "08:30");
-
-    const float configuredTarget = PersistentSettings.get("ac_default_target", "24").toFloat();
-    defaultTarget_ = configuredTarget >= MIN_AC_TEMP && configuredTarget <= MAX_AC_TEMP
-                         ? configuredTarget
-                         : 24.0f;
-}
-
-void AcController::reloadConfig()
-{
-    loadConfig();
-    gScheduler.remove(MorningOffJob);
-    gScheduler.remove(SleepInOffJob);
-    tasksEnsured_ = false;
+    const TimeType &turnOffTime = acTurnOffTimeConfig.value();
+    const TimeType &sleepInTurnOffTime = acSleepInTurnOffTimeConfig.value();
+    if (turnOffTime_ != turnOffTime || sleepInTurnOffTime_ != sleepInTurnOffTime)
+    {
+        LOG("AC", "Shutdown times changed to %s / %s: rescheduling", turnOffTime.toString().c_str(),
+            sleepInTurnOffTime.toString().c_str());
+        turnOffTime_ = turnOffTime;
+        sleepInTurnOffTime_ = sleepInTurnOffTime;
+        gScheduler.remove(MorningOffJob);
+        gScheduler.remove(SleepInOffJob);
+        tasksEnsured_ = false;
+    }
 }
 
 void AcController::loop()
 {
+    syncConfig();
     const uint32_t nowMs = millis();
     if (lastLoopMs_ != 0 && nowMs - lastLoopMs_ < AC_LOOP_INTERVAL_MS)
         return;
@@ -109,21 +87,19 @@ bool AcController::currentTemperature(float &temperature) const
         return false;
     temperature = status.tempC;
 #else
-    if (temperature_ == nullptr || !externalTemperatureSensor.hasValue() ||
-        externalTemperatureSensor.isStale())
+    if (!externalTemperatureSensor.hasValue() || externalTemperatureSensor.isStale())
         return false;
-    temperature = temperature_->getValue();
+    temperature = temperatureSensor.getValue();
 #endif
     return !isnan(temperature);
 }
 
 void AcController::doorLoop()
 {
-    if (!doorControlEnabled_ || doorPausedByUser_ || door_ == nullptr ||
-        !door_->hasValue() || door_->isStale())
+    if (!doorControlEnabled_ || doorPausedByUser_ || !doorSensor.hasValue() || doorSensor.isStale())
         return;
 
-    const bool open = door_->getValue() != doorInvert_;
+    const bool open = doorSensor.getValue() != doorInvert_;
     const uint32_t nowMs = millis();
     if (open)
     {
@@ -195,7 +171,8 @@ void AcController::targetLoop()
 
 bool AcController::scheduleMorningOff(bool forced)
 {
-    const String &clock = forced ? sleepInTurnOffTime_ : turnOffTime_;
+    String clock = (forced ? sleepInTurnOffTime_ : turnOffTime_).toString();
+    clock.remove(5); // NightMare's wall-clock scheduler is minute-resolution.
     const time_t due = NightMare::Time::timestampOfNextOccurrence(clock);
     if (due == 0)
     {
@@ -205,6 +182,11 @@ bool AcController::scheduleMorningOff(bool forced)
     const int32_t id = gScheduler.atWall(forced ? SleepInOffJob : MorningOffJob,
                                          forced ? sleepInOffJob : morningOffJob,
                                          static_cast<uint32_t>(due));
+    // Names the clock text it was built from and when it will really fire, so a shutdown at an
+    // unexpected hour can be traced to the Config value or to the clock/timezone.
+    LOG("AC", "%s shutdown job %s: configured %s, due %s (epoch %lu)", forced ? "Sleep-in" : "Morning",
+        id >= 0 ? "scheduled" : "REFUSED", clock.c_str(),
+        NightMare::Time::timestampToDateString(due).c_str(), (unsigned long)due);
     return id >= 0;
 }
 
@@ -224,8 +206,10 @@ void AcController::ensureScheduledTasks()
         gScheduler.remove(SleepInOffJob);
         return;
     }
-    LOG("AC", "Shutdown scheduled at %s (sleep-in %s)", turnOffTime_.c_str(),
-        sleepInTurnOffTime_.c_str());
+    const String turnOffTime = turnOffTime_.toString();
+    const String sleepInTurnOffTime = sleepInTurnOffTime_.toString();
+    LOG("AC", "Shutdown scheduled at %s (sleep-in %s)", turnOffTime.c_str(),
+        sleepInTurnOffTime.c_str());
 }
 
 void AcController::morningOffJob()
@@ -253,8 +237,6 @@ bool AcController::setTarget(float target)
         return false;
     target_ = target < 0 ? -fabsf(target) : target;
     stoppedByDoor_ = false;
-    if (target_ > 0)
-        defaultTarget_ = target_;
     return true;
 }
 
@@ -280,21 +262,21 @@ bool AcController::setFan(uint8_t fan)
         return false;
     if (fan == acIrState.state.fan)
         return true;
-    return acIrState.state.power && sendIRCode(AC_VENTILATOR);
+    return acIrState.state.power && sendIRCode(AC_VENTILATOR, IR_SRC_AC_CONTROLLER);
 }
 
 bool AcController::setTurbo(bool enabled)
 {
     if (enabled == acIrState.state.turbo)
         return true;
-    return acIrState.state.power && sendIRCode(AC_TURBO);
+    return acIrState.state.power && sendIRCode(AC_TURBO, IR_SRC_AC_CONTROLLER);
 }
 
 bool AcController::setLed(bool enabled)
 {
     if (enabled == acIrState.state.led)
         return true;
-    return acIrState.state.power && sendIRCode(AC_LED);
+    return acIrState.state.power && sendIRCode(AC_LED, IR_SRC_AC_CONTROLLER);
 }
 
 bool AcController::manualSync(bool on, uint8_t temperature)
@@ -342,8 +324,32 @@ bool AcController::setSleepMinutes(uint32_t minutes)
     return true;
 }
 
+/// Shutdown decided by the unit's real state, not by what we last queued. The IR belief
+/// can be wrong (a missed or manual remote press); a POWER toggle on the wrong belief
+/// would turn an off unit on, or leave a running one running.
+void AcController::shutdownUnit()
+{
+    const AcPowerGuess guess = guessAcPower();
+    if (guess == AcPowerGuess::UNKNOWN)
+    {
+        acIrState.setPower(false); // nothing better than the belief
+        return;
+    }
+    const bool on = guess == AcPowerGuess::ON;
+    if (acIrState.state.power != on)
+    {
+        LOG("AC", "IR belief (%s) disagrees with unit (%s): trusting the unit",
+            acIrState.state.power ? "on" : "off", on ? "on" : "off");
+        acIrState.manualSync(on, acIrState.state.temp);
+    }
+    acIrState.setPower(false); // sends POWER only if the (now corrected) belief is on
+}
+
 void AcController::morningOff(bool force)
 {
+    LOG("AC", "Shutdown fired at %s (forced %d; Config ac_turn_off_time=%s, sleep-in=%s)",
+        NightMare::Time::fullTimeString().c_str(), force, acTurnOffTimeConfig.value().toString().c_str(),
+        acSleepInTurnOffTimeConfig.value().toString().c_str());
     if (!force && sleepIn_)
     {
         LOG("AC", "Morning shutdown skipped: sleep-in armed");
@@ -352,7 +358,7 @@ void AcController::morningOff(bool force)
     sleepIn_ = false;
     if (target_ > 0)
         target_ = -target_;
-    acIrState.setPower(false);
+    shutdownUnit();
     LOG("AC", "Morning shutdown");
 }
 
@@ -420,8 +426,8 @@ void AcController::info(JsonObject into) const
     config["doorStopSeconds"] = doorSecsToStop_;
     config["doorControl"] = doorControlEnabled_;
     config["doorInvert"] = doorInvert_;
-    config["turnOffTime"] = turnOffTime_;
-    config["sleepInTurnOffTime"] = sleepInTurnOffTime_;
+    config["turnOffTime"] = turnOffTime_.toString();
+    config["sleepInTurnOffTime"] = sleepInTurnOffTime_.toString();
 }
 
 bool AcController::handles(const String &command) const
@@ -508,11 +514,6 @@ NightMareResults AcController::command(const NightMareMessage &message)
         serializeJson(doc, output);
         return success(output);
     }
-    if (message.subcommand == "RELOAD")
-    {
-        reloadConfig();
-        return success(stateJson());
-    }
     if (message.subcommand == "MORNINGOFF")
     {
         String option = message.args[1];
@@ -521,6 +522,6 @@ NightMareResults AcController::command(const NightMareMessage &message)
         return success(stateJson());
     }
     if (message.subcommand == "HELP")
-        return success("AC [STATE|INFO|RELOAD|MORNINGOFF [FORCE]]. Root: SETTEMP, TARGET, POWER, MANUALSYNC, SLEEP-IN, PAUSEDOORSENSOR, SLEEP");
-    return failure("Unknown AC subcommand: STATE, INFO, RELOAD, MORNINGOFF, HELP");
+        return success("AC [STATE|INFO|MORNINGOFF [FORCE]]. Root: SETTEMP, TARGET, POWER, MANUALSYNC, SLEEP-IN, PAUSEDOORSENSOR, SLEEP");
+    return failure("Unknown AC subcommand: STATE, INFO, MORNINGOFF, HELP");
 }

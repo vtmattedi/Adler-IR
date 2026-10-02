@@ -1,6 +1,24 @@
 #pragma once
 #include <Arduino.h>
+#include <NightMare.h>
 #include <board.h>
+
+/* The temperature the AC policy controls on. The sensor may be local (DS18B20) or remote
+ * (another device, over MQTT): either way consumers read temperatureSensor.getValue(), and the
+ * source is a runtime choice made through the ResourcesManager, not a compile-time one.
+ *
+ * This module owns both declarations and their names; NightMare binds them at startup. On a board without a
+ * probe, temperatureSensor mirrors the remote source (dependsOn) and republishes it.
+ */
+extern ManagedSensor<float> temperatureSensor;
+#if !BOARD_HAS_DS18B20
+extern RemoteSensor<float> externalTemperatureSensor;
+#endif
+
+/// @brief Declares the temperature policy and, with a probe, starts the sampling task (which
+/// returns immediately: the sensor is found and read on the task; a missing one is retried, so
+/// it can be plugged in later). Resources bind themselves in startNightMareESP().
+void setupTempSensor();
 
 #if BOARD_HAS_DS18B20
 
@@ -12,6 +30,9 @@
 #define TEMP_RESOLUTION_BITS 12
 /// Time from the start of one reading to the start of the next.
 #define TEMP_READ_INTERVAL_MS 5000
+/// A remotely configured poll interval is clamped to this range (the conversion takes 750 ms at 12 bits).
+#define TEMP_POLL_MIN_MS 5000
+#define TEMP_POLL_MAX_MS 60000
 /// Consecutive failed reads before the sensor is treated as gone and the bus is searched again.
 /// A single CRC error is not worth reporting the temperature as unknown.
 #define TEMP_MAX_FAILURES 3
@@ -30,10 +51,6 @@ struct TempSensorStatus
     uint32_t lastReadMs; ///< millis() of the last good reading, 0 if there has never been one.
     char address[17];    ///< ROM code in hex; empty while not connected.
 };
-
-/// @brief Starts the sampling task and returns immediately. The sensor is found and read on the
-/// task; a missing one is retried every TEMP_READ_INTERVAL_MS, so it can be plugged in later.
-void setupTempSensor();
 /// @brief Latest reading in Celsius, or NAN when there is none (not found yet, or lost).
 /// Never blocks: it returns what the task last read.
 float currentTemperature();
