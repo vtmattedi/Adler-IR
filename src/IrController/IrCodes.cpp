@@ -1,4 +1,5 @@
 #include "IrCodes.h"
+#include <Core/Text.h>
 
 // ---- the code table ------------------------------------------------------------
 // One table drives name -> code, code -> name and code -> protocol, so the three
@@ -50,7 +51,7 @@ static const IrCodeEntry *findEntry(uint32_t code)
     return nullptr;
 }
 
-String getIrName(uint32_t IrCode)
+std::string getIrName(uint32_t IrCode)
 {
     const IrCodeEntry *e = findEntry(IrCode);
     return e ? e->name : "UNKNOWN";
@@ -62,20 +63,20 @@ IrProtocol getIrProtocol(uint32_t code)
     return e ? e->protocol : IR_PROTO_NONE;
 }
 
-uint32_t getIrCode(const String &name)
+IrCodes getIrCodeByName(const std::string &name)
 {
-    String wanted = name;
-    wanted.trim();
-    wanted.toUpperCase();
+    std::string wanted = name;
+    NightMare::Text::trim(wanted);
+    NightMare::Text::toUpper(wanted);
     for (size_t i = 0; i < kIrCodeCount; i++)
         if (wanted == kIrCodes[i].name)
-            return kIrCodes[i].code;
-    return 0; // no real command is 0, so it doubles as "not found"
+            return static_cast<IrCodes>(kIrCodes[i].code);
+    return IrCodes::NO_CODE; // no real command is 0, so it doubles as "not found"
 }
 
-String getIrCodeNames()
+std::string getIrCodeNames()
 {
-    String list;
+    std::string list;
     for (size_t i = 0; i < kIrCodeCount; i++)
     {
         if (i)

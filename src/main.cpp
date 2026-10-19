@@ -6,24 +6,20 @@
 #include <TempSensor/TempSensor.h>
 #include <IrController/IrController.h>
 #include <AcController/AcController.h>
-#include <LittleFS.h>
-#include <acGuesser.h>
+#include <AcObservation/AcObservations.h>
+#include <AcState/AcSender.h>
 #if defined(BOARD_C6_V1)
 #include <ledController/ledController.h>
 #endif
-// Adler: the air-conditioner controller.
-//   sensors     DS18B20 (local), the IR receiver (local), the door (another device, over MQTT)
-//   actuator    the IR transmitter
+// Adler: the air-conditioner controller for the room.
+//   observes   Watson's fan, compressor and beeps (NightMare Remote Resources), the IR receiver,
+//              the door (another device), the local DS18B20
+//   decides    AcController (being rebuilt)
+//   acts       AcCommand over the IR transmitter, with one pending beep confirmation
+// main.cpp is wiring only.
 
 NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
 {
-    if (gAc.handles(message.command))
-    {
-        NightMareResults result = gAc.command(message);
-        gAc.publishResources();
-        return result;
-    }
-
     NightMareResults res;
     res.result = false;
     res.response = "not implemented";
@@ -37,124 +33,84 @@ NightMareResults localHandleNightMareCommand(const NightMareMessage &message)
             color = strtoul(message.args[0].c_str(), nullptr, 16);
             rgbLedColor.setValue(color);
             res.result = true;
-            res.response = "RGB LED color set to: " + String(color, HEX);
+            res.response = "RGB LED color set to: " + NightMare::Text::hex(color);
         }
         else
         {
             color = rgbLedColor.getValue();
             res.result = true;
-            res.response = "RGB LED current color: " + String(color, HEX);
+            res.response = "RGB LED current color: " + NightMare::Text::hex(color);
         }
     }
     else
 #endif
-        if (message.command == "IR")
-    {
-        if (message.argc > 0)
+        if (message.command == "AC")
         {
-            uint32_t code = getIrCode(message.args[0]);
-            if (code != 0)
+            bool a = launchAsNonblocking(IrCodes::AC_POWER);
+            res.result = true;
+            res.response = a ? "AC POWER command sent" : "AC POWER command not sent (busy)";
+        }
+        if (message.command == "IR")
+        {
+            if (message.argc > 0)
             {
-                if (sendIRCode(code))
+                IrCodes code = static_cast<IrCodes>(NightMare::Text::toLong(message.args[0]));
+
+                IrCodes irCode = getIrCodeByName(message.args[0]);
+                if (irCode != IrCodes::NO_CODE)
                 {
-                    res.result = true;
-                    res.response = "IR code sent: " + String(message.args[0]);
+                    sendIRCode(irCode);
+                }
+                else if (code != 0)
+                {
+                    sendIRCode(static_cast<IrCodes>(code));
                 }
                 else
                 {
                     res.result = false;
-                    res.response = "Failed to send IR code: " + String(message.args[0]);
+                    res.response = "Unknown IR code name: " + message.args[0];
                 }
             }
             else
             {
                 res.result = false;
-                res.response = "Unknown IR code name: " + String(message.args[0]);
+                res.response = "No IR code name provided";
             }
         }
-
         else
         {
-            res.result = false;
-            res.response = "No IR code name provided";
+            Serial.printf("Command received: %s\n", message.command.c_str());
         }
-    }
-    else if (message.command == "AT")
-    {
-        Serial.printf("AC Guess: \n");
-        Serial.printf("\t-Last IR Code: %s\n", getIrName(acGuess.lastIrCode).c_str());
-        Serial.printf("\t\t-Last IR Sent: %lu\n", acGuess.lastIrSent);
-        Serial.printf("\t-Last Beep: %lu\n", acGuess.lastbeep);
-        Serial.printf("\t-Fan Guess: %s\n", acGuess.fanguess ? "true" : "false");
-        Serial.printf("\t\t-Last Fan Change: %lu\n", acGuess.lastfanchange);
-        Serial.printf("\t-Compressor Guess: %s\n", acGuess.compressorguess ? "true" : "false");
-        Serial.printf("\t\t-Last Compressor Change: %lu\n", acGuess.lastcompressorchange);
-        res.result = true;
-        res.response = "AC Guess state printed to Serial";
-    }
-    else
-    {
-        Serial.printf("Command received: %s\n", message.command.c_str());
-    }
     return res;
 }
 
 // ---- lifecycle -------------------------------------------------------------------------
 
-void handleTestMessage(const char *topic, const uint8_t *payload, size_t length, bool retained)
-{
-    Serial.printf("MQTT message received: topic=%s, payload=%.*s, retained=%d\n", topic, (int)length, payload, retained);
-}
-
 void setup()
 {
-
     introNightMareESP();
     printBoardInfo();
-    NightMare::Subscribe("test/#");
-    NightMare::OnMessage(handleTestMessage);
     setCommandResolver(localHandleNightMareCommand);
-    // Each module declares and keeps its own Resources and Configs; startNightMareESP() binds them.
-    gAc.begin();
-    gAc.publishResources();
+
+    installAcObservations();
     setupTempSensor();
     startIrServices();
 #if defined(BOARD_C6_V1)
     setupLed();
 #endif
     startNightMareESP();
-    startAcGuess();
+
 #if defined(BOARD_C6_V1)
     pinMode(PIN_BUTTON, INPUT_PULLUP);
-
 #endif
-    // int results[WIFI_POWER_21dBm] = {0};
-    // for (int i = 0; i < WIFI_POWER_21dBm; ++i)
-    // {
-    //     bool is_power = powerStr((wifi_power_t)i) != "unknown";
-    //     if (!is_power)
-    //         {
-    //             results[i] = -1;
-    //             continue;
-    //         }
-    //     wifi_connect((wifi_power_t)i);
-    //     results[i] = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
-    // }
-    // for (int i = 0; i < WIFI_POWER_21dBm; ++i)
-    // {
-    //     if (results[i] == -1)
-    //         continue;
-    //     Serial.printf("WiFi power %s dBm %s\n", powerStr((wifi_power_t)i), OK_LOG(results[i] == 1));
-    // }
+    gAcSender.begin();
 }
 
 void loop()
 {
-
-    gAc.loop();
-    gAc.publishResources();
-    pumpIrServices();
     tickNightMareESP();
+    gAcCommandController.tick();
+    gAcSender.tick();
 #if defined(BOARD_C6_V1)
     static bool val = digitalRead(PIN_BUTTON);
     if (val != digitalRead(PIN_BUTTON))
@@ -162,8 +118,7 @@ void loop()
         if (val)
         {
             LOG("Button", "pressed");
-            gAc.setPower(!acIrState.state.power);
-            gAc.publishResources();
+            gAcSender.sendCommandWithAnswer(IrCodes::AC_POWER);
         }
         else
             LOG("Button", "released");

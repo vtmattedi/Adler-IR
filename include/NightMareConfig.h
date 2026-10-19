@@ -49,6 +49,14 @@ inline int port()
 #define REMOTE_MQTT_PORT AdlerBroker::port()
 #endif
 
+// The library's MQTT client references the LAN broker unconditionally. Current credentials only
+// carry the remote broker, so the local profile is switched off and given an inert address.
+#ifndef LOCAL_MQTT_HOST
+#define LOCAL_MQTT_HOST ""
+#define LOCAL_MQTT_PORT 1883
+#define NM_NETWORK_LOCALMQTT 0
+#endif
+
 #ifndef MQTT_CREDS_H
 #define MQTT_CREDS_H 1
 #endif
@@ -62,6 +70,8 @@ inline int port()
 #define NM_ENABLE_CONSOLE 1
 #define NM_ENABLE_WIFI 1
 #define NM_ENABLE_MQTT 1
+// ESP-NOW to the Nightmare Gateway, with remote MQTT still compiled in as the other profile.
+#define NM_NETWORK_ESPNOW 1
 #define NM_ENABLE_TELEMETRY 1
 #define NM_ENABLE_SCHEDULER 1
 #define NM_ENABLE_JOBS 1
@@ -73,5 +83,6 @@ inline int port()
 #define NM_CONSOLE_SERIAL 1
 #define NM_FIRMWARE_VERSION VERSION
 #define NM_LOG_USE_TIME_OF_DAY 1
-
+#define NM_LOG_USE_UTC 1
+#define NM_ENABLE_OTA 1
 #define NM_LOG_LEVEL NM_LOG_LEVEL_TRACE 

@@ -1,10 +1,12 @@
 #pragma once
 #include <Arduino.h>
+#include <string>
 
 /// @brief Every IR code this device knows, across remotes. The table in IrCodes.cpp
 /// pairs each with its wire name and protocol.
 enum IrCodes
 {
+    NO_CODE = 0, ///< not in the table
     // MY AC unit -- its own 24-bit pulse-distance protocol
     AC_POWER = 0x10001,
     AC_PLUS = 0x40004,
@@ -45,12 +47,12 @@ enum IrProtocol
 
 /// @brief Gets the wire name of a code: "POWER" for the AC, "HY350_POWER" for the projector.
 /// @return The name, "UNKNOWN" if the code is not in the table.
-String getIrName(uint32_t IrCode);
+std::string getIrName(uint32_t IrCode);
 /// @brief Looks up a code by its wire name, the inverse of getIrName. Case and surrounding
 /// whitespace are ignored.
-/// @return The code, or 0 when the name is not one of the known commands.
-uint32_t getIrCode(const String &name);
+/// @return The code, or IrCodes::NO_CODE when the name is not one of the known commands.
+IrCodes getIrCodeByName(const std::string &name);
 /// @brief Every name getIrCode() accepts, comma separated, for help text.
-String getIrCodeNames();
+std::string getIrCodeNames();
 /// @brief The protocol a table code belongs to, IR_PROTO_NONE for anything else.
 IrProtocol getIrProtocol(uint32_t code);
