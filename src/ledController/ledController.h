@@ -8,6 +8,11 @@
 extern ManagedState<uint32_t> rgbLedColor;
 /// Installs the write handler. The Resource binds itself in startNightMareESP().
 void setupLed();
+/// Shows the network state on the LED: red nothing, yellow radio, blue Wi-Fi IP, cyan MQTT, green
+/// ESP-NOW. Install before startNightMareESP() so no layer is missed, then call tickStatusLed()
+/// from loop(): the handler runs on the network tasks and only records the colour.
+void setupStatusLed();
+void tickStatusLed();
 #endif
 
 void writeLedColor(uint32_t color);

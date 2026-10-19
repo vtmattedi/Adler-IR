@@ -1,6 +1,7 @@
 #include "ledController.h"
 #if defined(BOARD_C6_V1)
 #include <Adafruit_NeoPixel.h>
+#include <atomic>
 static bool ledControllerInitialized = false;
 Adafruit_NeoPixel strip(1, PIN_RGB_DATA, NEO_GRB + NEO_KHZ800);
 
@@ -55,5 +56,54 @@ static bool onRgbWrite(ManagedState<uint32_t> &, const uint32_t &requested)
 void setupLed()
 {
     rgbLedColor.onWrite = onRgbWrite;
+}
+
+// ---- network status ---------------------------------------------------------------
+// Dim on purpose: the LED sits next to the unit in a dark room.
+static constexpr uint32_t kColorNone = 0x300000;   // red:    nothing is up
+static constexpr uint32_t kColorRadio = 0x302000;  // yellow: Wi-Fi radio only
+static constexpr uint32_t kColorIp = 0x000030;     // blue:   Wi-Fi IP, no transport
+static constexpr uint32_t kColorMqtt = 0x003030;   // cyan:   MQTT connected
+static constexpr uint32_t kColorEspNow = 0x003000; // green:  ESP-NOW connected
+
+static std::atomic<uint8_t> layersUp{0};              // bit per NetworkLayer
+static std::atomic<uint32_t> statusColor{kColorNone}; // what the status should show
+static uint32_t shownColor = 0xFFFFFFFF;              // never a real colour: forces the first write
+
+static uint32_t colorForLayers(uint8_t up)
+{
+    using NightMare::NetworkLayer;
+    auto has = [up](NetworkLayer layer) { return (up >> static_cast<uint8_t>(layer)) & 1; };
+    if (has(NetworkLayer::ESP_NOW))
+        return kColorEspNow;
+    if (has(NetworkLayer::MQTT))
+        return kColorMqtt;
+    if (has(NetworkLayer::WIFI_IP))
+        return kColorIp;
+    if (has(NetworkLayer::WIFI_RADIO))
+        return kColorRadio;
+    return kColorNone;
+}
+
+/// Runs on the Wi-Fi, MQTT and ESP-NOW tasks: records the state, touches no hardware.
+static void onNetworkStatus(const NightMare::NetworkStatusEvent &event)
+{
+    const uint8_t bit = 1u << static_cast<uint8_t>(event.layer);
+    const uint8_t up = event.up ? (layersUp.fetch_or(bit) | bit) : (layersUp.fetch_and(~bit) & ~bit);
+    statusColor.store(colorForLayers(up));
+}
+
+void setupStatusLed()
+{
+    NightMare::OnNetworkStatus(onNetworkStatus);
+}
+
+void tickStatusLed()
+{
+    const uint32_t color = statusColor.load();
+    if (color == shownColor)
+        return;
+    shownColor = color;
+    writeLedColor(color);
 }
 #endif

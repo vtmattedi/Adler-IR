@@ -97,6 +97,7 @@ void setup()
     startIrServices();
 #if defined(BOARD_C6_V1)
     setupLed();
+    setupStatusLed();
 #endif
     startNightMareESP();
 
@@ -109,6 +110,9 @@ void setup()
 void loop()
 {
     tickNightMareESP();
+#if defined(BOARD_C6_V1)
+    tickStatusLed();
+#endif
     gAcCommandController.tick();
     gAcSender.tick();
 #if defined(BOARD_C6_V1)
