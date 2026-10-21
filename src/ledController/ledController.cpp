@@ -69,6 +69,9 @@ static constexpr uint32_t kColorEspNow = 0x003000; // green:  ESP-NOW connected
 static std::atomic<uint8_t> layersUp{0};              // bit per NetworkLayer
 static std::atomic<uint32_t> statusColor{kColorNone}; // what the status should show
 static uint32_t shownColor = 0xFFFFFFFF;              // never a real colour: forces the first write
+static uint32_t shownSinceMs = 0;                     // when shownColor was written
+static bool ledBlanked = false;                       // shownColor has been switched off again
+static constexpr uint32_t kConnectedLedMs = 10000;    // how long a connected colour stays lit
 
 static uint32_t colorForLayers(uint8_t up)
 {
@@ -101,9 +104,22 @@ void setupStatusLed()
 void tickStatusLed()
 {
     const uint32_t color = statusColor.load();
-    if (color == shownColor)
+    const uint32_t now = millis();
+    if (color != shownColor)
+    {
+        shownColor = color;
+        shownSinceMs = now;
+        ledBlanked = false;
+        writeLedColor(color);
         return;
-    shownColor = color;
-    writeLedColor(color);
+    }
+    // Connected is the settled state, so the LED only confirms it for a while. Everything short
+    // of it stays lit: it is telling someone that the device is not there yet.
+    const bool connected = color == kColorEspNow || color == kColorMqtt;
+    if (connected && !ledBlanked && now - shownSinceMs >= kConnectedLedMs)
+    {
+        ledBlanked = true;
+        writeLedColor(0);
+    }
 }
 #endif
